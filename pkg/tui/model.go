@@ -157,6 +157,9 @@ type Model struct {
 	viewport        viewport.Model
 	contextDebug    string
 	debugExpanded   bool
+	history         []string
+	historyIdx      int
+	tempInput       string
 
 	// Modal state
 	activeModal   modalKind
@@ -224,6 +227,8 @@ func New(cfg Config) Model {
 		renderer:        renderer,
 		lines:           []string{},
 		viewport:        viewport.New(0, 0),
+		history:         []string{},
+		historyIdx:      0,
 	}
 }
 
@@ -303,12 +308,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+			if msg.String() == "up" && len(m.history) > 0 {
+				if m.historyIdx == len(m.history) {
+					m.tempInput = m.input.Value()
+				}
+				m.historyIdx--
+				if m.historyIdx < 0 {
+					m.historyIdx = 0
+				}
+				m.input.SetValue(m.history[m.historyIdx])
+				m.input.SetCursor(len(m.input.Value()))
+				return m, nil
+			}
 		case "down", "tab":
 			if len(m.filteredCmds) > 0 {
 				m.selectedCmdIdx++
 				if m.selectedCmdIdx >= len(m.filteredCmds) {
 					m.selectedCmdIdx = 0
 				}
+				return m, nil
+			}
+			if msg.String() == "down" && len(m.history) > 0 {
+				m.historyIdx++
+				if m.historyIdx > len(m.history) {
+					m.historyIdx = len(m.history)
+				}
+				if m.historyIdx == len(m.history) {
+					m.input.SetValue(m.tempInput)
+				} else {
+					m.input.SetValue(m.history[m.historyIdx])
+				}
+				m.input.SetCursor(len(m.input.Value()))
 				return m, nil
 			}
 		case "enter":
@@ -323,6 +353,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if value == "" || m.busy {
 				return m, nil
 			}
+			if len(m.history) == 0 || m.history[len(m.history)-1] != value {
+				m.history = append(m.history, value)
+			}
+			m.historyIdx = len(m.history)
+			m.tempInput = ""
+
 			m.input.SetValue("")
 			m.filteredCmds = nil
 			if value == "/exit" || value == "/quit" {
