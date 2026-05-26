@@ -11,26 +11,35 @@ import (
 
 type Handler func(string) (string, error)
 
+type CommandDef struct {
+	Name        string
+	Description string
+}
+
 type Config struct {
 	Title     string
 	SessionID string
 	Provider  string
 	Model     string
 	Handler   Handler
+	Commands  []CommandDef
 }
 
 type Model struct {
-	title     string
-	sessionID string
-	provider  string
-	model     string
-	handler   Handler
-	input     textinput.Model
-	lines     []string
-	width     int
-	height    int
-	busy      bool
-	err       error
+	title          string
+	sessionID      string
+	provider       string
+	model          string
+	handler        Handler
+	input          textinput.Model
+	lines          []string
+	width          int
+	height         int
+	busy           bool
+	err            error
+	commands       []CommandDef
+	filteredCmds   []CommandDef
+	selectedCmdIdx int
 }
 
 type responseMsg struct {
@@ -41,14 +50,17 @@ type responseMsg struct {
 
 func New(cfg Config) Model {
 	input := textinput.New()
-	input.Placeholder = "Ask for a coding task or type /help"
+	input.Placeholder = ""
 	input.Prompt = "> "
+	input.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("33"))
+	input.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	input.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	input.Focus()
 	input.CharLimit = 8000
 
 	title := cfg.Title
 	if strings.TrimSpace(title) == "" {
-		title = "Agent CLI"
+		title = "Antigravity CLI"
 	}
 	handler := cfg.Handler
 	if handler == nil {
@@ -56,15 +68,14 @@ func New(cfg Config) Model {
 	}
 
 	return Model{
-		title:     title,
-		sessionID: cfg.SessionID,
-		provider:  cfg.Provider,
-		model:     cfg.Model,
-		handler:   handler,
-		input:     input,
-		lines: []string{
-			"Type /help for commands. Press Ctrl+C or type /exit to quit.",
-		},
+		title:          title,
+		sessionID:      cfg.SessionID,
+		provider:       cfg.Provider,
+		model:          cfg.Model,
+		handler:        handler,
+		input:          input,
+		commands:       cfg.Commands,
+		lines:          []string{}, // Start empty, header is drawn above
 	}
 }
 
@@ -77,18 +88,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.input.Width = max(20, msg.Width-4)
+		m.input.Width = max(20, msg.Width-2)
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
+		case "up", "shift+tab":
+			if len(m.filteredCmds) > 0 {
+				m.selectedCmdIdx--
+				if m.selectedCmdIdx < 0 {
+					m.selectedCmdIdx = len(m.filteredCmds) - 1
+				}
+				return m, nil
+			}
+		case "down", "tab":
+			if len(m.filteredCmds) > 0 {
+				m.selectedCmdIdx++
+				if m.selectedCmdIdx >= len(m.filteredCmds) {
+					m.selectedCmdIdx = 0
+				}
+				return m, nil
+			}
 		case "enter":
+			if len(m.filteredCmds) > 0 {
+				m.input.SetValue(m.filteredCmds[m.selectedCmdIdx].Name + " ")
+				m.input.SetCursor(len(m.input.Value()))
+				m.filteredCmds = nil
+				return m, nil
+			}
+
 			value := strings.TrimSpace(m.input.Value())
 			if value == "" || m.busy {
 				return m, nil
 			}
 			m.input.SetValue("")
+			m.filteredCmds = nil
 			if value == "/exit" || value == "/quit" {
 				return m, tea.Quit
 			}
@@ -112,56 +147,161 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
+	prevVal := m.input.Value()
 	m.input, cmd = m.input.Update(msg)
+	
+	if m.input.Value() != prevVal {
+		m.updateCompletions()
+	}
+
 	return m, cmd
 }
 
+func (m *Model) updateCompletions() {
+	val := m.input.Value()
+	m.filteredCmds = nil
+	m.selectedCmdIdx = 0
+	if strings.HasPrefix(val, "/") {
+		for _, c := range m.commands {
+			if strings.HasPrefix(c.Name, val) {
+				m.filteredCmds = append(m.filteredCmds, c)
+			}
+		}
+	}
+}
+
 func (m Model) View() string {
-	header := headerStyle.Render(m.title)
-	meta := fmt.Sprintf("provider=%s model=%s session=%s", valueOr(m.provider, "default"), valueOr(m.model, "routed"), valueOr(m.sessionID, "ephemeral"))
-	bodyHeight := m.height - 6
-	if bodyHeight < 6 {
-		bodyHeight = 6
+	// 1. Header (Logo + Info)
+	logoLines := []string{
+		lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("  ▄   "),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(" ▄█▄  "),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("118")).Render(" █ █  "),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("43")).Render(" █ █  "),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("█████ "),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("27")).Render("█   █ "),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("21")).Render("█   █ "),
 	}
-	body := visibleTail(m.lines, bodyHeight)
-	status := "ready"
-	if m.busy {
-		status = "running"
+	infoLines := []string{
+		"",
+		lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Bold(true).Render(m.title + " 1.0.2"),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(valueOr(m.provider, "default")),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(valueOr(m.model, "routed")),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("Session: " + valueOr(m.sessionID, "ephemeral")),
 	}
-	if m.err != nil {
-		status = "error: " + m.err.Error()
+
+	var headerLines []string
+	for i := 0; i < len(logoLines); i++ {
+		info := ""
+		if i < len(infoLines) {
+			info = infoLines[i]
+		}
+		headerLines = append(headerLines, logoLines[i]+"  "+info)
 	}
-	return strings.Join([]string{
-		header,
-		metaStyle.Render(meta),
-		bodyStyle.Width(max(40, m.width-2)).Height(bodyHeight).Render(strings.Join(body, "\n")),
-		statusStyle.Render(status),
+	headerLines = append(headerLines, "")
+
+	// 2. Chat history
+	var formattedLines []string
+	formattedLines = append(formattedLines, headerLines...)
+
+	for _, line := range m.lines {
+		if strings.HasPrefix(line, "you: ") {
+			formattedLines = append(formattedLines, userMsgStyle.Render("> "+line[5:]))
+		} else if strings.HasPrefix(line, "agent: ") {
+			agentLines := strings.Split(line[7:], "\n")
+			for _, al := range agentLines {
+				formattedLines = append(formattedLines, agentMsgStyle.Render(al))
+			}
+		} else if strings.HasPrefix(line, "error: ") {
+			formattedLines = append(formattedLines, errorMsgStyle.Render(line))
+		} else {
+			formattedLines = append(formattedLines, systemMsgStyle.Render(line))
+		}
+	}
+
+	// 3. Autocomplete
+	var autocomplete string
+	autocompleteHeight := 0
+	if len(m.filteredCmds) > 0 {
+		var lines []string
+		for i, c := range m.filteredCmds {
+			if i >= 5 {
+				break
+			}
+			style := autocompleteItemStyle
+			if i == m.selectedCmdIdx {
+				style = autocompleteSelectedStyle
+			}
+			lines = append(lines, style.Render(fmt.Sprintf("%-20s %s", c.Name, c.Description)))
+		}
+		autocomplete = strings.Join(lines, "\n")
+		autocompleteHeight = len(lines)
+	}
+
+	// 4. Footer
+	leftFooter := "? for shortcuts"
+	rightFooter := valueOr(m.model, "routed")
+	spaces := m.width - lipgloss.Width(leftFooter) - lipgloss.Width(rightFooter)
+	if spaces < 0 {
+		spaces = 0
+	}
+	footerLine := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(leftFooter + strings.Repeat(" ", spaces) + rightFooter)
+	separator := lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(strings.Repeat("─", m.width))
+	
+	footer := lipgloss.JoinVertical(lipgloss.Left, separator, footerLine)
+
+	// Calculate layout
+	footerHeight := 2
+	inputHeight := 1
+	bodyHeight := m.height - footerHeight - inputHeight
+	if autocompleteHeight > 0 {
+		bodyHeight -= autocompleteHeight
+	}
+
+	if bodyHeight < 5 {
+		bodyHeight = 5
+	}
+
+	bodyLines := visibleTail(formattedLines, bodyHeight)
+
+	// Push content to the bottom
+	padding := bodyHeight - len(bodyLines)
+	if padding > 0 {
+		for i := 0; i < padding; i++ {
+			bodyLines = append([]string{""}, bodyLines...)
+		}
+	}
+
+	body := strings.Join(bodyLines, "\n")
+
+	if autocomplete != "" {
+		return lipgloss.JoinVertical(lipgloss.Left,
+			body,
+			autocomplete,
+			m.input.View(),
+			footer,
+		)
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		body,
 		m.input.View(),
-	}, "\n")
+		footer,
+	)
 }
 
 func (m *Model) handleLocalCommand(value string) (bool, tea.Cmd) {
-	switch value {
-	case "/help":
-		m.lines = append(m.lines,
-			"commands: /help, /status, /compact, /clear, /exit",
-			"/status and /compact are handled by the agent command bridge when available.",
-		)
-		return true, nil
-	case "/clear":
+	if value == "/clear" {
 		m.lines = nil
 		return true, nil
-	case "/status", "/compact":
+	}
+	
+	if strings.HasPrefix(value, "/") {
 		m.busy = true
 		m.lines = append(m.lines, "you: "+value)
 		return true, runHandler(m.handler, value)
-	default:
-		if strings.HasPrefix(value, "/") {
-			m.lines = append(m.lines, "unknown command: "+value)
-			return true, nil
-		}
-		return false, nil
 	}
+	
+	return false, nil
 }
 
 func runHandler(handler Handler, input string) tea.Cmd {
@@ -193,8 +333,24 @@ func max(left, right int) int {
 }
 
 var (
-	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86"))
-	metaStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	bodyStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
-	statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	userMsgStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("33"))
+
+	agentMsgStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("252"))
+
+	errorMsgStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("196")).
+		Bold(true)
+
+	systemMsgStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("240")).
+		Italic(true)
+
+	autocompleteItemStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("244"))
+
+	autocompleteSelectedStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("63")).
+		Bold(true)
 )

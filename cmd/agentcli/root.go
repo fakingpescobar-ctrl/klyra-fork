@@ -173,18 +173,80 @@ func newTUICommand(opts *options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			tuiCommands := []tui.CommandDef{
+				{Name: "/help", Description: "Show available commands"},
+				{Name: "/clear", Description: "Clear chat history"},
+				{Name: "/status", Description: "Show workspace status"},
+				{Name: "/compact", Description: "Compact chat history to reduce tokens"},
+				{Name: "/doctor", Description: "Check local runtime support"},
+				{Name: "/tools", Description: "List available agent tools"},
+				{Name: "/sessions", Description: "List saved workspace sessions"},
+				{Name: "/checkpoint list", Description: "List workspace checkpoints"},
+				{Name: "/checkpoint create", Description: "Create a workspace checkpoint"},
+				{Name: "/checkpoint restore", Description: "Restore files from a checkpoint"},
+				{Name: "/diff preview", Description: "Preview a patch file"},
+				{Name: "/diff apply", Description: "Apply a patch file (requires --yes)"},
+				{Name: "/policy check", Description: "Classify a shell command by risk"},
+				{Name: "/config show", Description: "Print effective configuration"},
+				{Name: "/config init", Description: "Write default config file"},
+				{Name: "/save", Description: "Manually save the session state"},
+				{Name: "/exit", Description: "Exit the TUI"},
+				{Name: "/quit", Description: "Exit the TUI (alias)"},
+			}
+
 			handler := func(input string) (string, error) {
-				switch strings.TrimSpace(input) {
-				case "/status":
-					return tuiStatus(opts.cwd)
-				case "/compact":
-					compacted, stats := contextmgr.CompactMessages(saved.Messages, runtimeCfg.MaxContext, runtimeCfg.MaxMessages/2)
-					saved.Messages = compacted
-					if err := store.Save(saved); err != nil {
-						return "", err
+				trimmed := strings.TrimSpace(input)
+				if strings.HasPrefix(trimmed, "/") && !strings.HasPrefix(trimmed, "/exit") && !strings.HasPrefix(trimmed, "/quit") && !strings.HasPrefix(trimmed, "/clear") {
+					args := strings.Fields(trimmed)
+					cmdName := args[0]
+					
+					switch cmdName {
+					case "/help":
+						var helpOut strings.Builder
+						helpOut.WriteString("Available commands:\n")
+						for _, c := range tuiCommands {
+							helpOut.WriteString(fmt.Sprintf("  %-20s %s\n", c.Name, c.Description))
+						}
+						return strings.TrimSpace(helpOut.String()), nil
+					case "/status":
+						return tuiStatus(opts.cwd)
+					case "/save":
+						if err := store.Save(saved); err != nil {
+							return "", err
+						}
+						return fmt.Sprintf("saved: %s", saved.ID), nil
+					case "/compact":
+						compacted, stats := contextmgr.CompactMessages(saved.Messages, runtimeCfg.MaxContext, runtimeCfg.MaxMessages/2)
+						saved.Messages = compacted
+						if err := store.Save(saved); err != nil {
+							return "", err
+						}
+						return fmt.Sprintf("compacted: messages %d -> %d, estimated tokens %d -> %d",
+							stats.OriginalMessages, stats.PackedMessages, stats.OriginalTokens, stats.PackedTokens), nil
+					case "/diff":
+						if len(args) >= 2 && args[1] == "apply" {
+							hasYes := false
+							for _, a := range args {
+								if a == "--yes" {
+									hasYes = true
+									break
+								}
+							}
+							if !hasYes {
+								return "diff apply requires --yes in the TUI to confirm.", nil
+							}
+						}
+						fallthrough
+					case "/doctor", "/tools", "/sessions", "/checkpoint", "/policy", "/config":
+						cliCmdName := strings.TrimPrefix(cmdName, "/")
+						var out strings.Builder
+						subCmd := newRootCommand()
+						subCmd.SetArgs(append([]string{cliCmdName}, args[1:]...))
+						subCmd.SetOut(&out)
+						subCmd.SetErr(&out)
+						err := subCmd.Execute()
+						return strings.TrimSpace(out.String()), err
 					}
-					return fmt.Sprintf("compacted: messages %d -> %d, estimated tokens %d -> %d",
-						stats.OriginalMessages, stats.PackedMessages, stats.OriginalTokens, stats.PackedTokens), nil
 				}
 				var output strings.Builder
 				runnerWithOutput, err := agent.New(agent.Config{
@@ -224,6 +286,7 @@ func newTUICommand(opts *options) *cobra.Command {
 				Provider:  runtimeCfg.Provider,
 				Model:     model,
 				Handler:   handler,
+				Commands:  tuiCommands,
 			})
 			_, err = tea.NewProgram(tuiModel).Run()
 			return err

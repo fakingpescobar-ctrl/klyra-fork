@@ -10,15 +10,24 @@ import (
 func TestViewIncludesMetadata(t *testing.T) {
 	model := New(Config{SessionID: "s1", Provider: "mock", Model: "mock-agent"})
 	view := model.View()
-	if !strings.Contains(view, "provider=mock") || !strings.Contains(view, "session=s1") {
+	if !strings.Contains(view, "mock") || !strings.Contains(view, "Session: s1") {
 		t.Fatalf("view missing metadata:\n%s", view)
 	}
 }
 
 func TestHelpCommandUpdatesView(t *testing.T) {
-	model := New(Config{})
+	model := New(Config{
+		Handler: func(input string) (string, error) {
+			if input == "/help" {
+				return "commands: /help", nil
+			}
+			return "", nil
+		},
+	})
 	model.input.SetValue("/help")
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg := cmd()
+	updated, _ = updated.(Model).Update(msg)
 	view := updated.(Model).View()
 	if !strings.Contains(view, "commands: /help") {
 		t.Fatalf("help command not rendered:\n%s", view)
