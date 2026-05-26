@@ -98,13 +98,20 @@ type anthropicMessage struct {
 }
 
 type anthropicContentBlock struct {
-	Type      string         `json:"type"`
-	Text      string         `json:"text,omitempty"`
-	ID        string         `json:"id,omitempty"`
-	Name      string         `json:"name,omitempty"`
-	Input     map[string]any `json:"input,omitempty"`
-	ToolUseID string         `json:"tool_use_id,omitempty"`
-	Content   string         `json:"content,omitempty"`
+	Type      string                `json:"type"`
+	Text      string                `json:"text,omitempty"`
+	Source    *anthropicImageSource `json:"source,omitempty"`
+	ID        string                `json:"id,omitempty"`
+	Name      string                `json:"name,omitempty"`
+	Input     map[string]any        `json:"input,omitempty"`
+	ToolUseID string                `json:"tool_use_id,omitempty"`
+	Content   string                `json:"content,omitempty"`
+}
+
+type anthropicImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 type anthropicTool struct {
@@ -135,10 +142,17 @@ func anthropicMessages(messages []Message) []anthropicMessage {
 		case RoleSystem:
 			continue
 		case RoleUser:
-			out = append(out, anthropicMessage{
-				Role:    "user",
-				Content: []anthropicContentBlock{{Type: "text", Text: msg.Content}},
-			})
+			blocks := make([]anthropicContentBlock, 0, 1+len(msg.Attachments))
+			if strings.TrimSpace(msg.Content) != "" {
+				blocks = append(blocks, anthropicContentBlock{Type: "text", Text: msg.Content})
+			}
+			blocks = append(blocks, anthropicImageBlocks(msg.Attachments)...)
+			if len(blocks) > 0 {
+				out = append(out, anthropicMessage{
+					Role:    "user",
+					Content: blocks,
+				})
+			}
 		case RoleAssistant:
 			blocks := make([]anthropicContentBlock, 0, 1+len(msg.ToolCalls))
 			if strings.TrimSpace(msg.Content) != "" {
@@ -167,6 +181,24 @@ func anthropicMessages(messages []Message) []anthropicMessage {
 		}
 	}
 	return out
+}
+
+func anthropicImageBlocks(attachments []Attachment) []anthropicContentBlock {
+	blocks := make([]anthropicContentBlock, 0, len(attachments))
+	for _, attachment := range attachments {
+		if attachment.Type != "image" || strings.TrimSpace(attachment.Data) == "" || strings.TrimSpace(attachment.MIMEType) == "" {
+			continue
+		}
+		blocks = append(blocks, anthropicContentBlock{
+			Type: "image",
+			Source: &anthropicImageSource{
+				Type:      "base64",
+				MediaType: attachment.MIMEType,
+				Data:      attachment.Data,
+			},
+		})
+	}
+	return blocks
 }
 
 func anthropicTools(specs []ToolSpec) []anthropicTool {

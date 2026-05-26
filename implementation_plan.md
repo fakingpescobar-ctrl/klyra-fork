@@ -65,21 +65,28 @@
 
 ### Current Implementation Notes
 - Базовый CLI реализован на `spf13/cobra`.
-- OpenAI provider по умолчанию использует Responses API; legacy Chat Completions сохранен как `chat`; локальные OpenAI-compatible модели доступны через `ollama`; Anthropic Messages API доступен через `anthropic`.
+- OpenAI provider по умолчанию использует Responses API; legacy Chat Completions сохранен как `chat`; локальные OpenAI-compatible модели доступны через `ollama`; Anthropic Messages API доступен через `anthropic`; Gemini GenerateContent API доступен через `gemini`.
 - Встроены tools: `project_map`, `list_files`, `read_file`, `read_go_symbol`, `write_file`, `search`, `bash`, `diff_patch`.
 - Для экономии токенов добавлены output compression, line slicing, Go symbol retrieval и динамическое pruning tool schema.
 - Добавлены support-команды `doctor`, `tools`, `config`, `sessions`.
 - Добавлены JSON config profiles (`local`, `coding`, `deep`), workspace session persistence и approval policy для рискованных tools.
+- Добавлена загрузка project instruction files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.agentcli/instructions.md`, `.cursor/rules/*.md` и др.) в system prompt с байтовым бюджетом и командой `instructions`.
 - Добавлены git/status/diff/checkpoint tools и CLI-команды `status`, `checkpoint create/list/restore`.
 - Добавлен task-based model routing (`fast`, `edit`, `deep`) для снижения стоимости на простых задачах.
 - Добавлен Responses API streaming (`--stream`) с SSE parsing и fallback для провайдеров без streaming.
 - Добавлен `diff_preview` tool и CLI-команда `diff preview` для проверки unified diff перед применением.
 - Добавлены estimated token budget packing, deterministic context summaries, orphan tool-output pruning, `/compact` в chat и `sessions compact`.
-- Добавлен Bubble Tea TUI (`agentcli tui`) с input surface, scrollable-style transcript, status line и командами `/help`, `/status`, `/compact`, `/clear`, `/exit`.
+- Добавлен Bubble Tea TUI/Klyra (`agentcli tui`) с dashboard header, stream rendering, command palette/autocomplete, settings panel (`F2`/`Ctrl+S`) с выбором provider/reasoning/approval/sandbox и текстовыми полями model/endpoint, settings-командами (`/provider`, `/model`, `/endpoint`, `/reasoning`, `/limits`, `/approval`, `/sandbox`) и attach-flow для Vision.
 - Добавлен shell policy classifier (`read`, `write`, `network`, `destructive`), CLI `policy check`, tool `policy_check`; destructive bash patterns block in auto approval.
 - Добавлен `diff apply` UX: preview/check first, workspace checkpoint by default, optional `--yes`.
 - Добавлены sandbox profiles (`read-only`, `workspace-write`, `danger-full-access`) с enforcement в tool registry и CLI-флагом `--sandbox`.
 - Добавлен Anthropic Messages provider с `tool_use`/`tool_result` mapping и usage parsing.
+- Добавлен Gemini GenerateContent provider с `functionCall`/`functionResponse` mapping, profile/env wiring и usage parsing.
+- Добавлены Vision attachments для OpenAI Responses, Anthropic, Gemini и OpenAI-compatible/Ollama; base64 image data не сохраняется в session history ради экономии токенов.
+- Approval mode `ask` получил TUI modal: рискованные tool calls подтверждаются внутри приложения клавишами `y`/`Enter` или отклоняются `n`/`Esc`.
+- `project_map` усилен в сторону aider-style repo map: примерный token budget, focus ranking, Go AST summaries по package/imports/functions/methods/types вместо простого списка файлов.
+- Добавлены реальные режимы сложности (`inspect`, `edit`, `repair`, `refactor`) и context cart. `inspect` скрывает/блокирует write/shell tools, `edit` требует явно добавленные файлы для write tools.
+- Добавлен context debugger: после хода показывается режим, context cart, видимые модели tools и риски неполного контекста без автоматического расширения prompt.
 
 ### Manual Verification
 - Запуск CLI локально на тестовом Go-репозитории.

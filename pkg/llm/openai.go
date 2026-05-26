@@ -82,7 +82,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 	}
 	message := decoded.Choices[0].Message
 	return Response{
-		Content:   message.Content,
+		Content:   openAIContentString(message.Content),
 		ToolCalls: parseOpenAIToolCalls(message.ToolCalls),
 		Usage: Usage{
 			InputTokens:     decoded.Usage.PromptTokens,
@@ -91,6 +91,27 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 			TotalTokens:     decoded.Usage.TotalTokens,
 		},
 	}, nil
+}
+
+func openAIContentString(content any) string {
+	switch value := content.(type) {
+	case string:
+		return value
+	case []any:
+		var parts []string
+		for _, item := range value {
+			part, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if text, _ := part["text"].(string); strings.TrimSpace(text) != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
 }
 
 type openAIChatRequest struct {
@@ -102,9 +123,19 @@ type openAIChatRequest struct {
 
 type openAIMessage struct {
 	Role       string           `json:"role"`
-	Content    string           `json:"content,omitempty"`
+	Content    any              `json:"content,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+}
+
+type openAIContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageURL *openAIImageURL `json:"image_url,omitempty"`
+}
+
+type openAIImageURL struct {
+	URL string `json:"url"`
 }
 
 type openAITool struct {
@@ -150,12 +181,42 @@ func openAIMessages(messages []Message) []openAIMessage {
 	for _, msg := range messages {
 		out = append(out, openAIMessage{
 			Role:       string(msg.Role),
-			Content:    msg.Content,
+			Content:    openAIMessageContent(msg),
 			ToolCallID: msg.ToolCallID,
 			ToolCalls:  openAIToolCalls(msg.ToolCalls),
 		})
 	}
 	return out
+}
+
+func openAIMessageContent(msg Message) any {
+	if msg.Role != RoleUser || len(msg.Attachments) == 0 {
+		return msg.Content
+	}
+	parts := make([]openAIContentPart, 0, 1+len(msg.Attachments))
+	if strings.TrimSpace(msg.Content) != "" {
+		parts = append(parts, openAIContentPart{Type: "text", Text: msg.Content})
+	}
+	for _, attachment := range msg.Attachments {
+		if attachment.Type != "image" {
+			continue
+		}
+		imageURL := strings.TrimSpace(attachment.URL)
+		if imageURL == "" && strings.TrimSpace(attachment.Data) != "" && strings.TrimSpace(attachment.MIMEType) != "" {
+			imageURL = "data:" + attachment.MIMEType + ";base64," + attachment.Data
+		}
+		if imageURL == "" {
+			continue
+		}
+		parts = append(parts, openAIContentPart{
+			Type:     "image_url",
+			ImageURL: &openAIImageURL{URL: imageURL},
+		})
+	}
+	if len(parts) == 0 {
+		return msg.Content
+	}
+	return parts
 }
 
 func openAITools(specs []ToolSpec) []openAITool {

@@ -87,3 +87,29 @@ func TestOpenAIMessagesIncludeAssistantToolCalls(t *testing.T) {
 		t.Fatalf("unexpected tool name: %+v", messages[0].ToolCalls[0])
 	}
 }
+
+func TestOpenAIMessagesIncludeImagesForOllamaCompatibleVision(t *testing.T) {
+	messages := openAIMessages([]Message{{
+		Role:    RoleUser,
+		Content: "describe this",
+		Attachments: []Attachment{{
+			Type:     "image",
+			MIMEType: "image/png",
+			Name:     "screen.png",
+			Data:     "aW1hZ2U=",
+		}},
+	}})
+	if len(messages) != 1 {
+		t.Fatalf("expected one message: %+v", messages)
+	}
+	parts, ok := messages[0].Content.([]openAIContentPart)
+	if !ok {
+		t.Fatalf("expected multipart content, got %T", messages[0].Content)
+	}
+	if len(parts) != 2 || parts[0].Type != "text" || parts[1].Type != "image_url" {
+		t.Fatalf("unexpected content parts: %+v", parts)
+	}
+	if parts[1].ImageURL == nil || parts[1].ImageURL.URL != "data:image/png;base64,aW1hZ2U=" {
+		t.Fatalf("unexpected image url: %+v", parts[1])
+	}
+}

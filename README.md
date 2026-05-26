@@ -47,6 +47,8 @@ Optional:
 export OLLAMA_BASE_URL="http://localhost:11434/v1"
 ```
 
+Ollama vision-capable models can receive images from the TUI via `/attach path/to/image.png`, using the OpenAI-compatible `image_url` message format.
+
 ## Anthropic provider
 
 ```sh
@@ -61,6 +63,20 @@ Optional:
 export ANTHROPIC_BASE_URL="https://api.anthropic.com"
 ```
 
+## Gemini provider
+
+```sh
+export GEMINI_API_KEY="..."
+export GEMINI_MODEL="gemini-2.5-flash"
+go run . --provider gemini run "inspect this project"
+```
+
+Optional:
+
+```sh
+export GEMINI_BASE_URL="https://generativelanguage.googleapis.com/v1beta"
+```
+
 ## Support commands
 
 ```sh
@@ -68,6 +84,8 @@ go run . config init
 go run . config show --profile coding
 go run . doctor
 go run . tools
+go run . instructions
+go run . instructions --content
 go run . status --diff
 go run . checkpoint create before-refactor
 go run . checkpoint list
@@ -90,7 +108,68 @@ go run . --session feature-work run "continue the refactor"
 Sessions are stored under `.agentcli/sessions` in the workspace and are ignored by git.
 Inside chat, `/compact` rewrites older history into a compact deterministic summary so future turns spend fewer context tokens.
 
-The Bubble Tea TUI supports `/help`, `/status`, `/compact`, `/clear`, and `/exit`.
+The Klyra Bubble Tea TUI is intended as the primary work surface. It supports `/help`, `/status`, `/settings`, `/provider`, `/model`, `/reasoning`, `/limits`, `/approval`, `/sandbox`, `/attach`, `/attachments`, `/instructions`, `/compact`, `/clear`, and `/exit`.
+
+Press `F2` or `Ctrl+S` to open the settings panel. Use `Tab` to move between fields, left/right arrows to choose provider/reasoning/approval/sandbox values, type directly into text fields such as model or endpoint, then press `Enter` to apply the runtime settings.
+
+Example TUI flow:
+
+```text
+/provider ollama
+/model llama3.2-vision
+/endpoint http://localhost:11434/v1
+/reasoning low
+/limits context 16000
+/attach screenshots/error.png
+explain this screenshot and inspect the relevant code
+```
+
+When approval mode is `ask`, risky tool calls appear as an in-app approval prompt. Press `y`/`Enter` to approve or `n`/`Esc` to reject.
+
+Image attachments are sent only with the next model request and are not stored as base64 in session history, keeping future turns cheap.
+
+## Modes and context cart
+
+Klyra has real mode constraints, not just labels:
+
+- `inspect`: retrieval only; write tools and shell are hidden/blocked.
+- `edit`: write tools require files in the context cart.
+- `repair`: keeps the agent focused on failing output, relevant code, and current diff.
+- `refactor`: exposes preview/search paths and requires explicit context cart before broad patches.
+
+Use CLI flags or TUI commands:
+
+```sh
+go run . --mode inspect run "map the auth flow"
+go run . --mode edit --context-file pkg/auth/middleware.go run "fix the auth bug"
+```
+
+```text
+/mode edit
+/cart add pkg/auth/middleware.go pkg/auth/login_test.go
+```
+
+After a turn, the context debugger reports the mode, context cart, tools the model could see, and risks such as “edit mode has no cart”. This is meant to make weak-model answers safer without automatically stuffing more files into context.
+
+## Vision
+
+Vision attachments are supported for OpenAI Responses, Anthropic, Gemini, and OpenAI-compatible chat providers such as Ollama. Attachments are encoded as provider-native image parts and stripped from saved history after the turn.
+
+
+## Project instructions
+
+Agent CLI automatically loads common repository instruction files into the system prompt, capped by `--max-instruction-bytes`:
+
+- `AGENTS.md`
+- `CLAUDE.md`
+- `GEMINI.md`
+- `.agentcli/instructions.md`
+- `.agentcli/rules.md`
+- `.cursorrules`
+- `.github/copilot-instructions.md`
+- `.cursor/rules/*.md`
+
+Use `go run . instructions --content` to inspect exactly what the agent will see.
 
 ## Approval policy
 
@@ -144,6 +223,7 @@ Use cheaper models for inspection and stronger models for edits or deep reasonin
 go run . --provider openai \
   --stream \
   --max-context-tokens 32000 \
+  --max-instruction-bytes 12000 \
   --fast-model "$FAST_MODEL" \
   --edit-model "$CODING_MODEL" \
   --deep-model "$REASONING_MODEL" \
@@ -158,7 +238,7 @@ Agent CLI estimates prompt tokens locally and packs context before provider call
 
 ## Implemented tools
 
-- `project_map`: compact language/file map for low-token project discovery.
+- `project_map`: token-budgeted repo map for low-token discovery; includes important files, Go package/imports, funcs, methods, types, and focus-based ranking.
 - `list_files`: lists workspace files while skipping common generated directories.
 - `read_file`: reads files with line slicing.
 - `read_go_symbol`: reads a Go declaration by symbol name without loading the whole file.

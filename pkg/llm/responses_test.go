@@ -102,6 +102,27 @@ func TestResponseInputItemsIncludesFunctionCallOutputs(t *testing.T) {
 	}
 }
 
+func TestResponseInputItemsIncludesImages(t *testing.T) {
+	items := responseInputItems([]Message{
+		{
+			Role:    RoleUser,
+			Content: "what is this?",
+			Attachments: []Attachment{{
+				Type:     "image",
+				MIMEType: "image/png",
+				Name:     "screen.png",
+				Data:     "aW1hZ2U=",
+			}},
+		},
+	})
+	if len(items) != 1 || len(items[0].Content) != 2 {
+		t.Fatalf("expected text and image content, got %+v", items)
+	}
+	if items[0].Content[1].Type != "input_image" || items[0].Content[1].ImageURL != "data:image/png;base64,aW1hZ2U=" {
+		t.Fatalf("unexpected image content: %+v", items[0].Content[1])
+	}
+}
+
 func TestResponsesProviderStreamsDeltasAndFinalResponse(t *testing.T) {
 	var captured responsesRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -44,6 +44,33 @@ func TestRunWithSandboxBlocksNetworkInWorkspaceWrite(t *testing.T) {
 	}
 }
 
+func TestSpecsForInspectModeBlocksEditTools(t *testing.T) {
+	specs := NewDefaultRegistry().SpecsForTaskMode("fix bug", "inspect", nil)
+	if hasSpec(specs, "write_file") || hasSpec(specs, "diff_patch") || hasSpec(specs, "bash") {
+		t.Fatalf("inspect mode should expose retrieval only: %+v", specs)
+	}
+}
+
+func TestEditModeRequiresContextCart(t *testing.T) {
+	_, err := NewDefaultRegistry().RunWithPolicy(context.Background(), t.TempDir(), "workspace-write", "edit", nil, llm.ToolCall{
+		Name:      "write_file",
+		Arguments: map[string]any{"path": "main.go", "content": "x"},
+	})
+	if err == nil {
+		t.Fatal("expected edit mode to require context cart")
+	}
+}
+
+func TestEditModeBlocksFilesOutsideContextCart(t *testing.T) {
+	_, err := NewDefaultRegistry().RunWithPolicy(context.Background(), t.TempDir(), "workspace-write", "edit", []string{"allowed.go"}, llm.ToolCall{
+		Name:      "write_file",
+		Arguments: map[string]any{"path": "other.go", "content": "x"},
+	})
+	if err == nil {
+		t.Fatal("expected edit mode to block files outside context cart")
+	}
+}
+
 func hasSpec(specs []llm.ToolSpec, name string) bool {
 	for _, spec := range specs {
 		if spec.Name == name {

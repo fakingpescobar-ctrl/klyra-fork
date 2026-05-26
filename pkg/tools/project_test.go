@@ -11,12 +11,24 @@ import (
 func TestProjectMapReturnsCompactImportantFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "go.mod", "module sample\n")
-	writeTestFile(t, dir, "cmd/app/main.go", "package main\n")
+	writeTestFile(t, dir, "cmd/app/main.go", `package main
+
+import "fmt"
+
+type Server struct{}
+
+func main() {}
+
+func (s *Server) Login(user string) error {
+	fmt.Println(user)
+	return nil
+}
+`)
 	writeTestFile(t, dir, "node_modules/ignored/index.js", "ignored\n")
 
 	result, err := ProjectMap{}.Run(context.Background(), Invocation{
 		CWD:  dir,
-		Args: map[string]any{"max_files": 10},
+		Args: map[string]any{"max_files": 10, "max_tokens": 220, "focus": "login"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -26,6 +38,9 @@ func TestProjectMapReturnsCompactImportantFiles(t *testing.T) {
 	}
 	if strings.Contains(result.Output, "node_modules") {
 		t.Fatalf("expected generated directories to be skipped:\n%s", result.Output)
+	}
+	if !strings.Contains(result.Output, "go_symbols:") || !strings.Contains(result.Output, "func Server.Login") {
+		t.Fatalf("expected Go symbols in project map:\n%s", result.Output)
 	}
 }
 

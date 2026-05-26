@@ -12,10 +12,19 @@ const (
 )
 
 type Message struct {
-	Role       Role       `json:"role"`
-	Content    string     `json:"content"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	Role        Role         `json:"role"`
+	Content     string       `json:"content"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+	ToolCallID  string       `json:"tool_call_id,omitempty"`
+	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
+}
+
+type Attachment struct {
+	Type     string `json:"type"`
+	MIMEType string `json:"mime_type"`
+	Name     string `json:"name,omitempty"`
+	Data     string `json:"data,omitempty"`
+	URL      string `json:"url,omitempty"`
 }
 
 type ToolSpec struct {
@@ -25,9 +34,10 @@ type ToolSpec struct {
 }
 
 type ToolCall struct {
-	ID        string         `json:"id"`
-	Name      string         `json:"name"`
-	Arguments map[string]any `json:"arguments"`
+	ID               string         `json:"id"`
+	Name             string         `json:"name"`
+	Arguments        map[string]any `json:"arguments"`
+	ProviderMetadata map[string]any `json:"provider_metadata,omitempty"`
 }
 
 type Request struct {

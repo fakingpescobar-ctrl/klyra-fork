@@ -90,3 +90,23 @@ func TestAnthropicMessagesIncludeToolResults(t *testing.T) {
 		t.Fatalf("tool use/result blocks not mapped: %+v", messages)
 	}
 }
+
+func TestAnthropicMessagesIncludeImages(t *testing.T) {
+	messages := anthropicMessages([]Message{{
+		Role:    RoleUser,
+		Content: "describe",
+		Attachments: []Attachment{{
+			Type:     "image",
+			MIMEType: "image/png",
+			Name:     "screen.png",
+			Data:     "aW1hZ2U=",
+		}},
+	}})
+	if len(messages) != 1 || len(messages[0].Content) != 2 {
+		t.Fatalf("expected text and image blocks, got %+v", messages)
+	}
+	image := messages[0].Content[1]
+	if image.Type != "image" || image.Source == nil || image.Source.MediaType != "image/png" || image.Source.Data != "aW1hZ2U=" {
+		t.Fatalf("unexpected image block: %+v", image)
+	}
+}

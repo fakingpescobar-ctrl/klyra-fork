@@ -11,9 +11,11 @@ import (
 )
 
 type Invocation struct {
-	CWD     string
-	Sandbox string
-	Args    map[string]any
+	CWD          string
+	Sandbox      string
+	Mode         string
+	ContextFiles []string
+	Args         map[string]any
 }
 
 type Result struct {
@@ -71,7 +73,12 @@ func (r *Registry) Specs() []llm.ToolSpec {
 }
 
 func (r *Registry) SpecsForTask(task string) []llm.ToolSpec {
+	return r.SpecsForTaskMode(task, "", nil)
+}
+
+func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []llm.ToolSpec {
 	task = strings.ToLower(task)
+	mode = strings.ToLower(strings.TrimSpace(mode))
 	names := map[string]bool{
 		"project_map":  true,
 		"search":       true,
@@ -94,6 +101,34 @@ func (r *Registry) SpecsForTask(task string) []llm.ToolSpec {
 		names["git_diff"] = true
 		names["workspace_checkpoint"] = true
 	}
+	switch mode {
+	case "inspect":
+		delete(names, "bash")
+		delete(names, "diff_patch")
+		delete(names, "diff_preview")
+		delete(names, "git_diff")
+		delete(names, "write_file")
+		delete(names, "workspace_checkpoint")
+		delete(names, "workspace_restore")
+	case "repair":
+		names["git_diff"] = true
+		names["bash"] = true
+		delete(names, "workspace_restore")
+	case "refactor":
+		names["search"] = true
+		names["git_diff"] = true
+		names["diff_preview"] = true
+		names["bash"] = true
+		if len(contextFiles) > 0 {
+			names["diff_patch"] = true
+			names["workspace_checkpoint"] = true
+		}
+	case "edit":
+		if len(contextFiles) == 0 {
+			delete(names, "diff_patch")
+			delete(names, "write_file")
+		}
+	}
 	if len(task) < 80 && !mentionsEdit(task) && !mentionsShell(task) {
 		names["list_files"] = true
 	}
@@ -113,14 +148,85 @@ func (r *Registry) Run(ctx context.Context, cwd string, call llm.ToolCall) (Resu
 }
 
 func (r *Registry) RunWithSandbox(ctx context.Context, cwd string, sandbox string, call llm.ToolCall) (Result, error) {
+	return r.RunWithPolicy(ctx, cwd, sandbox, "", nil, call)
+}
+
+func (r *Registry) RunWithPolicy(ctx context.Context, cwd string, sandbox string, mode string, contextFiles []string, call llm.ToolCall) (Result, error) {
 	tool, ok := r.tools[call.Name]
 	if !ok {
 		return Result{}, fmt.Errorf("unknown tool %q", call.Name)
 	}
+	if err := enforceMode(mode, contextFiles, call); err != nil {
+		return Result{Output: err.Error()}, err
+	}
 	if err := enforceSandbox(sandbox, call); err != nil {
 		return Result{Output: err.Error()}, err
 	}
-	return tool.Run(ctx, Invocation{CWD: cwd, Sandbox: sandbox, Args: call.Arguments})
+	return tool.Run(ctx, Invocation{CWD: cwd, Sandbox: sandbox, Mode: mode, ContextFiles: contextFiles, Args: call.Arguments})
+}
+
+func enforceMode(mode string, contextFiles []string, call llm.ToolCall) error {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "inspect":
+		if isWriteTool(call.Name) {
+			return fmt.Errorf("mode inspect blocks %s", call.Name)
+		}
+	case "edit":
+		if isFileWriteTool(call.Name) {
+			if len(contextFiles) == 0 {
+				return fmt.Errorf("mode edit requires files in context cart before %s", call.Name)
+			}
+			if path := primaryWritePath(call); path != "" && !pathAllowed(path, contextFiles) {
+				return fmt.Errorf("mode edit blocks %s outside context cart: %s", call.Name, path)
+			}
+		}
+	case "refactor":
+		if call.Name == "diff_patch" && len(contextFiles) == 0 {
+			return fmt.Errorf("mode refactor requires context cart and dry-run evidence before diff_patch")
+		}
+	}
+	return nil
+}
+
+func isWriteTool(name string) bool {
+	return name == "write_file" || name == "diff_patch" || name == "workspace_restore" || name == "bash"
+}
+
+func isFileWriteTool(name string) bool {
+	return name == "write_file" || name == "diff_patch"
+}
+
+func primaryWritePath(call llm.ToolCall) string {
+	if call.Name == "write_file" {
+		path, _ := call.Arguments["path"].(string)
+		return path
+	}
+	if call.Name == "diff_patch" {
+		patch, _ := call.Arguments["patch"].(string)
+		return firstPatchPath(patch)
+	}
+	return ""
+}
+
+func firstPatchPath(patch string) string {
+	for _, line := range strings.Split(patch, "\n") {
+		if strings.HasPrefix(line, "+++ b/") {
+			return strings.TrimPrefix(strings.TrimSpace(line), "+++ b/")
+		}
+	}
+	return ""
+}
+
+func pathAllowed(path string, contextFiles []string) bool {
+	path = strings.Trim(strings.ReplaceAll(path, "\\", "/"), "./")
+	for _, allowed := range contextFiles {
+		allowed = strings.Trim(strings.ReplaceAll(allowed, "\\", "/"), "./")
+		if path == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func enforceSandbox(sandbox string, call llm.ToolCall) error {

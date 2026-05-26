@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -78,6 +80,110 @@ func TestAgentPacksLargeHistoryBeforeProviderRequest(t *testing.T) {
 	}
 }
 
+func TestAgentLoadsProjectInstructionsIntoSystemPrompt(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("Use table-driven tests."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{
+		responses: []llm.Response{{Content: "done"}},
+	}
+	agent, err := New(Config{
+		CWD:      root,
+		Provider: provider,
+		Output:   io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.Run(context.Background(), "inspect"); err != nil {
+		t.Fatal(err)
+	}
+	system := provider.requests[0].Messages[0]
+	if system.Role != llm.RoleSystem || !strings.Contains(system.Content, "Source: AGENTS.md") || !strings.Contains(system.Content, "Use table-driven tests.") {
+		t.Fatalf("project instructions were not loaded into system prompt: %+v", provider.requests[0].Messages)
+	}
+}
+
+func TestAgentReplacesSavedSystemMessageWithCurrentPrompt(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("Current repo rule."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{
+		responses: []llm.Response{{Content: "done"}},
+	}
+	agent, err := New(Config{
+		CWD:      root,
+		Provider: provider,
+		Output:   io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := []llm.Message{
+		{Role: llm.RoleSystem, Content: "stale prompt"},
+		{Role: llm.RoleUser, Content: "previous"},
+	}
+	if _, err := agent.RunConversation(context.Background(), history, "next"); err != nil {
+		t.Fatal(err)
+	}
+	messages := provider.requests[0].Messages
+	systemCount := 0
+	for _, message := range messages {
+		if message.Role == llm.RoleSystem {
+			systemCount++
+			if strings.Contains(message.Content, "stale prompt") || !strings.Contains(message.Content, "Current repo rule.") {
+				t.Fatalf("unexpected system prompt: %q", message.Content)
+			}
+		}
+	}
+	if systemCount != 1 {
+		t.Fatalf("expected one current system prompt, got %d in %+v", systemCount, messages)
+	}
+}
+
+func TestAgentDoesNotPersistAttachmentData(t *testing.T) {
+	provider := &scriptedProvider{
+		responses: []llm.Response{{Content: "done"}},
+	}
+	agent, err := New(Config{
+		CWD:      t.TempDir(),
+		Provider: provider,
+		Output:   io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.RunConversationWithAttachments(context.Background(), nil, "inspect image", []llm.Attachment{{
+		Type:     "image",
+		MIMEType: "image/png",
+		Name:     "screen.png",
+		Data:     "base64-data",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.requests[0].Messages[len(provider.requests[0].Messages)-1].Attachments) != 1 {
+		t.Fatalf("attachment was not sent to provider: %+v", provider.requests[0].Messages)
+	}
+	var found bool
+	for _, message := range result.Messages {
+		for _, attachment := range message.Attachments {
+			found = true
+			if attachment.Data != "" {
+				t.Fatalf("attachment data should not persist: %+v", result.Messages)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected sanitized attachment metadata in history: %+v", result.Messages)
+	}
+	if !strings.Contains(result.Messages[len(result.Messages)-2].Content, "[attachments: screen.png image/png]") {
+		t.Fatalf("expected attachment marker in stored content: %+v", result.Messages)
+	}
+}
+
 func TestAgentStreamsProviderOutput(t *testing.T) {
 	provider := &streamedProvider{
 		response: llm.Response{Content: "hello"},
@@ -141,6 +247,44 @@ func TestAgentRejectsApprovalRequiredTool(t *testing.T) {
 	}
 }
 
+func TestAgentUsesApprovalCallback(t *testing.T) {
+	provider := &scriptedProvider{
+		responses: []llm.Response{
+			{
+				ToolCalls: []llm.ToolCall{{
+					ID:        "call-1",
+					Name:      "write_file",
+					Arguments: map[string]any{"path": "x.txt", "content": "ok"},
+				}},
+			},
+			{Content: "done"},
+		},
+	}
+	var requestedTool string
+	agent, err := New(Config{
+		CWD:          t.TempDir(),
+		Provider:     provider,
+		ApprovalMode: "ask",
+		Output:       io.Discard,
+		Approver: func(req ApprovalRequest) (bool, error) {
+			requestedTool = req.Tool
+			return false, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.Run(context.Background(), "write file"); err != nil {
+		t.Fatal(err)
+	}
+	if requestedTool != "write_file" {
+		t.Fatalf("approval callback was not called, got %q", requestedTool)
+	}
+	if !strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content, "rejected by user") {
+		t.Fatalf("expected rejection observation: %+v", provider.requests[1].Messages)
+	}
+}
+
 func TestAgentAutoPolicyBlocksDestructiveBash(t *testing.T) {
 	provider := &scriptedProvider{
 		responses: []llm.Response{
@@ -190,6 +334,7 @@ func TestAgentSandboxBlocksWriteTool(t *testing.T) {
 		Provider:     provider,
 		ApprovalMode: "auto",
 		Sandbox:      "read-only",
+		ContextFiles: []string{"x.txt"},
 		Output:       io.Discard,
 	})
 	if err != nil {
@@ -201,6 +346,40 @@ func TestAgentSandboxBlocksWriteTool(t *testing.T) {
 	if !strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content, "sandbox read-only blocks write_file") {
 		t.Fatalf("expected sandbox block observation: %+v", provider.requests[1].Messages)
 	}
+}
+
+func TestAgentModeShapesVisibleTools(t *testing.T) {
+	provider := &scriptedProvider{
+		responses: []llm.Response{{Content: "done"}},
+	}
+	agent, err := New(Config{
+		CWD:      t.TempDir(),
+		Provider: provider,
+		Mode:     "inspect",
+		Output:   io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.RunConversation(context.Background(), nil, "fix bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasToolSpecName(provider.requests[0].Tools, "write_file") || hasToolSpecName(provider.requests[0].Tools, "diff_patch") {
+		t.Fatalf("inspect mode exposed edit tools: %+v", provider.requests[0].Tools)
+	}
+	if result.ContextDebug.Mode != "inspect" || len(result.ContextDebug.Risks) == 0 {
+		t.Fatalf("expected context debug for inspect mode: %+v", result.ContextDebug)
+	}
+}
+
+func hasToolSpecName(specs []llm.ToolSpec, name string) bool {
+	for _, spec := range specs {
+		if spec.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 type scriptedProvider struct {

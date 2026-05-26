@@ -160,8 +160,9 @@ type responseInputItem struct {
 }
 
 type responseContentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
 }
 
 type responseTool struct {
@@ -305,15 +306,22 @@ func responseInputItems(messages []Message) []responseInputItem {
 		case RoleSystem:
 			continue
 		case RoleUser, RoleAssistant:
-			if strings.TrimSpace(msg.Content) != "" {
+			if strings.TrimSpace(msg.Content) != "" || len(msg.Attachments) > 0 {
 				role := string(msg.Role)
-				items = append(items, responseInputItem{
-					Type: "message",
-					Role: role,
-					Content: []responseContentPart{{
+				content := []responseContentPart{}
+				if strings.TrimSpace(msg.Content) != "" {
+					content = append(content, responseContentPart{
 						Type: contentTypeForRole(msg.Role),
 						Text: msg.Content,
-					}},
+					})
+				}
+				if msg.Role == RoleUser {
+					content = append(content, responseImageParts(msg.Attachments)...)
+				}
+				items = append(items, responseInputItem{
+					Type:    "message",
+					Role:    role,
+					Content: content,
 				})
 			}
 			for _, call := range msg.ToolCalls {
@@ -335,6 +343,27 @@ func responseInputItems(messages []Message) []responseInputItem {
 		}
 	}
 	return items
+}
+
+func responseImageParts(attachments []Attachment) []responseContentPart {
+	parts := make([]responseContentPart, 0, len(attachments))
+	for _, attachment := range attachments {
+		if attachment.Type != "image" {
+			continue
+		}
+		imageURL := strings.TrimSpace(attachment.URL)
+		if imageURL == "" && strings.TrimSpace(attachment.Data) != "" && strings.TrimSpace(attachment.MIMEType) != "" {
+			imageURL = "data:" + attachment.MIMEType + ";base64," + attachment.Data
+		}
+		if imageURL == "" {
+			continue
+		}
+		parts = append(parts, responseContentPart{
+			Type:     "input_image",
+			ImageURL: imageURL,
+		})
+	}
+	return parts
 }
 
 func contentTypeForRole(role Role) string {
