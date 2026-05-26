@@ -155,6 +155,8 @@ type Model struct {
 	approvalReq     *ApprovalRequestMsg
 	spinnerFrame    int
 	viewport        viewport.Model
+	contextDebug    string
+	debugExpanded   bool
 
 	// Modal state
 	activeModal   modalKind
@@ -277,6 +279,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "f2", "ctrl+s":
 			m.openSettingsModal()
 			return m, nil
+		case "f3":
+			m.debugExpanded = !m.debugExpanded
+			m.syncViewport(m.debugExpanded)
+			return m, nil
 		case "pgup":
 			m.viewport.PageUp()
 			return m, nil
@@ -353,6 +359,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		outText := strings.TrimSpace(msg.output)
+		var debugText string
+		if idx := strings.Index(outText, "## Context Debugger"); idx >= 0 {
+			debugText = strings.TrimSpace(outText[idx:])
+			outText = strings.TrimSpace(outText[:idx])
+		}
+		m.contextDebug = debugText
+
 		if outText != "" {
 			m.lines = append(m.lines, "")
 
@@ -551,6 +564,26 @@ func (m Model) buildFormattedLines() []string {
 	} else if m.busy {
 		formattedLines = append(formattedLines, "")
 		formattedLines = append(formattedLines, m.renderThinkingBar())
+	}
+
+	if m.contextDebug != "" {
+		formattedLines = append(formattedLines, "")
+		if m.debugExpanded {
+			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorBrandDim).Render("  [F3] Hide Context Debugger"))
+			
+			// Render the debugger text via Glamour
+			text := m.contextDebug
+			if m.renderer != nil {
+				if rendered, errRender := m.renderer.Render(text); errRender == nil {
+					text = strings.TrimRight(rendered, " \n\r\t")
+				}
+			}
+			for _, line := range strings.Split(text, "\n") {
+				formattedLines = append(formattedLines, "  "+line)
+			}
+		} else {
+			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorBrandDim).Render("  [F3] Show Context Debugger"))
+		}
 	}
 
 	return formattedLines
