@@ -273,14 +273,14 @@ func newTUICommand(opts *options) *cobra.Command {
 						if err := store.Save(saved); err != nil {
 							return "", err
 						}
-						return fmt.Sprintf("saved: %s", saved.ID), nil
+						return fmt.Sprintf("### Session Saved\n\n- ID: `%s`", saved.ID), nil
 					case "/compact":
 						compacted, stats := contextmgr.CompactMessages(saved.Messages, runtimeCfg.MaxContext, runtimeCfg.MaxMessages/2)
 						saved.Messages = compacted
 						if err := store.Save(saved); err != nil {
 							return "", err
 						}
-						return fmt.Sprintf("compacted: messages %d -> %d, estimated tokens %d -> %d",
+						return fmt.Sprintf("### Session Compacted\n\n- Messages: `%d` ➔ `%d`\n- Estimated tokens: `%d` ➔ `%d`",
 							stats.OriginalMessages, stats.PackedMessages, stats.OriginalTokens, stats.PackedTokens), nil
 					case "/settings":
 						_ = runtimeCfg.Save(opts.configPath)
@@ -325,7 +325,7 @@ func newTUICommand(opts *options) *cobra.Command {
 						return formatTUISettings(runtimeCfg, pendingAttachments), nil
 					case "/limits":
 						if len(args) == 1 {
-							return "usage: /limits context 32000 | output 4096 | steps 12 | messages 40 | instructions 12000", nil
+							return "### Limits Usage\n\n`Format:` `/limits [context|output|steps|messages|instructions] <value>`\n\n*Example:* `/limits context 32000`", nil
 						}
 						if err := applyTUILimit(&runtimeCfg, args[1:]); err != nil {
 							return "", err
@@ -367,7 +367,7 @@ func newTUICommand(opts *options) *cobra.Command {
 							return "", err
 						}
 						pendingAttachments = append(pendingAttachments, attachment)
-						return fmt.Sprintf("attached %s (%s, %d base64 bytes). It will be sent with the next model request only.", attachment.Name, attachment.MIMEType, len(attachment.Data)), nil
+						return fmt.Sprintf("### Image Attached\n\n- Name: `%s`\n- Type: `%s`\n- Size: `%d` bytes\n\n*Attachment will be sent with the next request.*", attachment.Name, attachment.MIMEType, len(attachment.Data)), nil
 					case "/attachments":
 						return formatAttachments(pendingAttachments), nil
 					case "/diff":
@@ -546,14 +546,14 @@ func applyTUISet(cfg *appconfig.Config, args []string) error {
 
 func formatContextCart(files []string) string {
 	if len(files) == 0 {
-		return "context cart is empty. Use `/cart add path/to/file` before edit/refactor mode writes."
+		return "### Context Cart\n\n*Cart is empty. Use `/cart add <file>` to attach files.*"
 	}
-	var lines []string
-	lines = append(lines, "context cart:")
+	var builder strings.Builder
+	builder.WriteString("### Context Cart\n\n")
 	for _, file := range files {
-		lines = append(lines, "- "+file)
+		fmt.Fprintf(&builder, "- `%s`\n", file)
 	}
-	return strings.Join(lines, "\n")
+	return builder.String()
 }
 
 func printContextDebug(out io.Writer, debug agent.ContextDebug) {
@@ -642,13 +642,14 @@ func loadImageAttachment(cwd, path string) (llm.Attachment, error) {
 
 func formatAttachments(attachments []llm.Attachment) string {
 	if len(attachments) == 0 {
-		return "no pending image attachments"
+		return "### Pending Attachments\n\n*No pending image attachments.*"
 	}
-	var lines []string
+	var builder strings.Builder
+	builder.WriteString("### Pending Attachments\n\n")
 	for i, attachment := range attachments {
-		lines = append(lines, fmt.Sprintf("%d. %s `%s` %d base64 bytes", i+1, attachment.Name, attachment.MIMEType, len(attachment.Data)))
+		fmt.Fprintf(&builder, "%d. `%s` (%s, `%d` bytes)\n", i+1, attachment.Name, attachment.MIMEType, len(attachment.Data))
 	}
-	return strings.Join(lines, "\n")
+	return builder.String()
 }
 
 func valueOrString(value, fallback string) string {

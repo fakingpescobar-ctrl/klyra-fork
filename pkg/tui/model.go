@@ -1034,31 +1034,9 @@ func (m Model) updateSettingsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) renderHeader() string {
 	width := max(50, m.width)
 
-	// --- Logo (>< chevrons with gradient bar) ---
-	chevronStyle := lipgloss.NewStyle().Foreground(colorWhite).Bold(true)
-	
-	colors := []string{"#A855F7", "#8B5CF6", "#6366F1", "#3B82F6", "#0EA5E9", "#06B6D4"}
-	var gradientBar strings.Builder
-	for _, hex := range colors {
-		gradientBar.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render("█"))
-	}
-
-	logoLines := []string{
-		chevronStyle.Render("     ██▄                ▄██"),
-		chevronStyle.Render("       ██▄            ▄██"),
-		chevronStyle.Render("         ██▄        ▄██"),
-		chevronStyle.Render("         ▄██        ██▄"),
-		chevronStyle.Render("       ▄██            ██▄"),
-		chevronStyle.Render("     ▄██     ") + gradientBar.String() + chevronStyle.Render("     ██▄"),
-	}
-
-	// Title line
-	titleText := m.title
-	if strings.TrimSpace(titleText) == "" {
-		titleText = "Klyra"
-	}
-	title := lipgloss.NewStyle().Foreground(colorBrand).Bold(true).Render(titleText)
-	subtitle := lipgloss.NewStyle().Foreground(colorDim).Render("  agentic coding workspace")
+	// Brand logo/text
+	brandStyle := lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
+	logo := brandStyle.Render("❖ KLYRA")
 
 	// Status
 	status := "ready"
@@ -1076,7 +1054,7 @@ func (m Model) renderHeader() string {
 	modelBadge := pillBadge(valueOr(m.model, "routed"), colorBadgeBg3, colorBrand)
 	reasoningBadge := pillBadge("reasoning "+valueOr(m.reasoning, "default"), colorBadgeBg2, colorDim)
 
-	// Safety line
+	// Safety
 	safetyText := valueOr(m.mode, "edit") + " / " + valueOr(m.sandbox, "workspace-write") + " / " + valueOr(m.approval, "auto")
 	safetyBadge := pillBadge(safetyText, colorBadgeBg4, colorEmerald)
 
@@ -1088,26 +1066,24 @@ func (m Model) renderHeader() string {
 		lipgloss.NewStyle().Foreground(colorMuted).Render("session ") + lipgloss.NewStyle().Foreground(colorDim).Render(valueOr(m.sessionID, "ephemeral")),
 	}
 	if m.baseURL != "" {
-		budgetParts = append(budgetParts, lipgloss.NewStyle().Foreground(colorMuted).Render("endpoint ")+lipgloss.NewStyle().Foreground(colorDim).Render(shorten(m.baseURL, 34)))
+		budgetParts = append(budgetParts, lipgloss.NewStyle().Foreground(colorMuted).Render("endpoint ")+lipgloss.NewStyle().Foreground(colorDim).Render(shorten(m.baseURL, 24)))
 	}
 	budgets := strings.Join(budgetParts, lipgloss.NewStyle().Foreground(colorSeparator).Render(" · "))
 
-	// Separator
+	// Separator bar
 	barWidth := max(10, min(width-2, 90))
 	bar := lipgloss.NewStyle().Foreground(colorSeparator).Render(strings.Repeat("─", barWidth))
 
-	topLine := lipgloss.JoinHorizontal(lipgloss.Top, title, subtitle)
-	badgeLine := lipgloss.JoinHorizontal(lipgloss.Top, statusBadge, " ", providerBadge, " ", modelBadge, " ", reasoningBadge)
+	// Assemble layout in 2 compact lines + separator
+	line1 := lipgloss.JoinHorizontal(lipgloss.Center, "  ", logo, "  ", statusBadge, "  ", providerBadge, " ", modelBadge, " ", reasoningBadge)
+	line2 := lipgloss.JoinHorizontal(lipgloss.Center, "  ", budgets, "   ", safetyBadge)
 
-	result := []string{""}
-	result = append(result, logoLines...)
-	result = append(result,
+	result := []string{
 		"",
-		"  "+topLine,
-		"  "+badgeLine,
-		"  "+budgets+"  "+safetyBadge,
-		"  "+bar,
-	)
+		line1,
+		line2,
+		"  " + bar,
+	}
 
 	return strings.Join(result, "\n")
 }
@@ -1318,11 +1294,11 @@ func pillBadge(text string, bg, fg lipgloss.Color) string {
 func statusGlyph(status string) string {
 	switch status {
 	case "thinking":
-		return "~"
+		return "●"
 	case "error":
-		return "x"
+		return "✖"
 	default:
-		return "*"
+		return "✔"
 	}
 }
 
