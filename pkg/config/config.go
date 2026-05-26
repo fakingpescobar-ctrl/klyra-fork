@@ -9,44 +9,55 @@ import (
 )
 
 type Config struct {
-	Provider       string             `json:"provider"`
-	Model          string             `json:"model"`
-	ModelRoutes    map[string]string  `json:"model_routes,omitempty"`
-	Reasoning      string             `json:"reasoning,omitempty"`
-	MaxSteps       int                `json:"max_steps"`
-	MaxMessages    int                `json:"max_messages"`
-	MaxContext     int                `json:"max_context_tokens"`
-	MaxOutput      int                `json:"max_output_tokens"`
-	ApprovalMode   string             `json:"approval_mode"`
-	Sandbox        string             `json:"sandbox"`
-	StoreResponses bool               `json:"store_responses"`
-	Profiles       map[string]Profile `json:"profiles,omitempty"`
+	Provider        string             `json:"provider"`
+	Model           string             `json:"model"`
+	ModelRoutes     map[string]string  `json:"model_routes,omitempty"`
+	BaseURLs        map[string]string  `json:"base_urls,omitempty"`
+	Reasoning       string             `json:"reasoning,omitempty"`
+	MaxSteps        int                `json:"max_steps"`
+	MaxMessages     int                `json:"max_messages"`
+	MaxContext      int                `json:"max_context_tokens"`
+	MaxInstructions int                `json:"max_instruction_bytes"`
+	MaxOutput       int                `json:"max_output_tokens"`
+	ApprovalMode    string             `json:"approval_mode"`
+	Sandbox         string             `json:"sandbox"`
+	Mode            string             `json:"mode"`
+	ContextFiles    []string           `json:"context_files,omitempty"`
+	StoreResponses  bool               `json:"store_responses"`
+	Profiles        map[string]Profile `json:"profiles,omitempty"`
 }
 
 type Profile struct {
-	Provider       string            `json:"provider,omitempty"`
-	Model          string            `json:"model,omitempty"`
-	ModelRoutes    map[string]string `json:"model_routes,omitempty"`
-	Reasoning      string            `json:"reasoning,omitempty"`
-	MaxSteps       int               `json:"max_steps,omitempty"`
-	MaxMessages    int               `json:"max_messages,omitempty"`
-	MaxContext     int               `json:"max_context_tokens,omitempty"`
-	MaxOutput      int               `json:"max_output_tokens,omitempty"`
-	ApprovalMode   string            `json:"approval_mode,omitempty"`
-	Sandbox        string            `json:"sandbox,omitempty"`
-	StoreResponses *bool             `json:"store_responses,omitempty"`
+	Provider        string            `json:"provider,omitempty"`
+	Model           string            `json:"model,omitempty"`
+	ModelRoutes     map[string]string `json:"model_routes,omitempty"`
+	BaseURLs        map[string]string `json:"base_urls,omitempty"`
+	Reasoning       string            `json:"reasoning,omitempty"`
+	MaxSteps        int               `json:"max_steps,omitempty"`
+	MaxMessages     int               `json:"max_messages,omitempty"`
+	MaxContext      int               `json:"max_context_tokens,omitempty"`
+	MaxInstructions int               `json:"max_instruction_bytes,omitempty"`
+	MaxOutput       int               `json:"max_output_tokens,omitempty"`
+	ApprovalMode    string            `json:"approval_mode,omitempty"`
+	Sandbox         string            `json:"sandbox,omitempty"`
+	Mode            string            `json:"mode,omitempty"`
+	ContextFiles    []string          `json:"context_files,omitempty"`
+	StoreResponses  *bool             `json:"store_responses,omitempty"`
 }
 
 func Default() Config {
 	return Config{
-		Provider:     "mock",
-		Model:        "mock-agent",
-		MaxSteps:     8,
-		MaxMessages:  40,
-		MaxContext:   24000,
-		MaxOutput:    4096,
-		ApprovalMode: "auto",
-		Sandbox:      "workspace-write",
+		Provider:        "mock",
+		Model:           "mock-agent",
+		BaseURLs:        map[string]string{},
+		MaxSteps:        8,
+		MaxMessages:     40,
+		MaxContext:      24000,
+		MaxInstructions: 12000,
+		MaxOutput:       4096,
+		ApprovalMode:    "auto",
+		Sandbox:         "workspace-write",
+		Mode:            "edit",
 		Profiles: map[string]Profile{
 			"local": {
 				Provider: "mock",
@@ -62,6 +73,14 @@ func Default() Config {
 			},
 			"anthropic": {
 				Provider:     "anthropic",
+				MaxSteps:     12,
+				MaxContext:   32000,
+				MaxOutput:    4096,
+				ApprovalMode: "ask",
+				Sandbox:      "workspace-write",
+			},
+			"gemini": {
+				Provider:     "gemini",
 				MaxSteps:     12,
 				MaxContext:   32000,
 				MaxOutput:    4096,
@@ -153,6 +172,14 @@ func (c Config) WithProfile(name string) (Config, error) {
 	if profile.ModelRoutes != nil {
 		c.ModelRoutes = profile.ModelRoutes
 	}
+	if profile.BaseURLs != nil {
+		if c.BaseURLs == nil {
+			c.BaseURLs = map[string]string{}
+		}
+		for provider, baseURL := range profile.BaseURLs {
+			c.BaseURLs[provider] = baseURL
+		}
+	}
 	if profile.Reasoning != "" {
 		c.Reasoning = profile.Reasoning
 	}
@@ -165,6 +192,9 @@ func (c Config) WithProfile(name string) (Config, error) {
 	if profile.MaxContext > 0 {
 		c.MaxContext = profile.MaxContext
 	}
+	if profile.MaxInstructions > 0 {
+		c.MaxInstructions = profile.MaxInstructions
+	}
 	if profile.MaxOutput > 0 {
 		c.MaxOutput = profile.MaxOutput
 	}
@@ -173,6 +203,12 @@ func (c Config) WithProfile(name string) (Config, error) {
 	}
 	if profile.Sandbox != "" {
 		c.Sandbox = profile.Sandbox
+	}
+	if profile.Mode != "" {
+		c.Mode = profile.Mode
+	}
+	if profile.ContextFiles != nil {
+		c.ContextFiles = append([]string(nil), profile.ContextFiles...)
 	}
 	if profile.StoreResponses != nil {
 		c.StoreResponses = *profile.StoreResponses
@@ -184,6 +220,9 @@ func (c *Config) applyDefaults() {
 	defaults := Default()
 	if c.Provider == "" {
 		c.Provider = defaults.Provider
+	}
+	if c.BaseURLs == nil {
+		c.BaseURLs = map[string]string{}
 	}
 	if c.Model == "" && c.Provider == "mock" {
 		c.Model = defaults.Model
@@ -197,6 +236,9 @@ func (c *Config) applyDefaults() {
 	if c.MaxContext <= 0 {
 		c.MaxContext = defaults.MaxContext
 	}
+	if c.MaxInstructions <= 0 {
+		c.MaxInstructions = defaults.MaxInstructions
+	}
 	if c.MaxOutput <= 0 {
 		c.MaxOutput = defaults.MaxOutput
 	}
@@ -205,6 +247,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Sandbox == "" {
 		c.Sandbox = defaults.Sandbox
+	}
+	if c.Mode == "" {
+		c.Mode = defaults.Mode
 	}
 	if c.Profiles == nil {
 		c.Profiles = defaults.Profiles

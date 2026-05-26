@@ -3,13 +3,17 @@ package agentcli
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +21,7 @@ import (
 	"agentcli/pkg/agent"
 	appconfig "agentcli/pkg/config"
 	contextmgr "agentcli/pkg/context"
+	"agentcli/pkg/instructions"
 	"agentcli/pkg/llm"
 	"agentcli/pkg/policy"
 	"agentcli/pkg/session"
@@ -28,24 +33,28 @@ import (
 )
 
 type options struct {
-	cwd         string
-	configPath  string
-	profile     string
-	provider    string
-	model       string
-	fastModel   string
-	editModel   string
-	deepModel   string
-	maxSteps    int
-	maxMessages int
-	maxContext  int
-	maxOutput   int
-	reasoning   string
-	store       bool
-	stream      bool
-	approval    string
-	sandbox     string
-	sessionID   string
+	cwd             string
+	configPath      string
+	profile         string
+	provider        string
+	model           string
+	baseURL         string
+	fastModel       string
+	editModel       string
+	deepModel       string
+	maxSteps        int
+	maxMessages     int
+	maxContext      int
+	maxInstructions int
+	maxOutput       int
+	reasoning       string
+	store           bool
+	stream          bool
+	approval        string
+	sandbox         string
+	mode            string
+	contextFiles    []string
+	sessionID       string
 }
 
 func Execute() {
@@ -66,20 +75,24 @@ func newRootCommand() *cobra.Command {
 	root.PersistentFlags().StringVar(&opts.cwd, "cwd", ".", "workspace directory")
 	root.PersistentFlags().StringVar(&opts.configPath, "config", "", "config file path")
 	root.PersistentFlags().StringVar(&opts.profile, "profile", "", "config profile")
-	root.PersistentFlags().StringVar(&opts.provider, "provider", "", "LLM provider: mock, openai, chat, ollama, anthropic")
-	root.PersistentFlags().StringVar(&opts.model, "model", "", "model name; for openai can also use OPENAI_MODEL")
+	root.PersistentFlags().StringVar(&opts.provider, "provider", "", "LLM provider: mock, openai, chat, ollama, anthropic, gemini")
+	root.PersistentFlags().StringVar(&opts.model, "model", "", "model name; can also use provider-specific *_MODEL env vars")
+	root.PersistentFlags().StringVar(&opts.baseURL, "base-url", "", "provider endpoint base URL override")
 	root.PersistentFlags().StringVar(&opts.fastModel, "fast-model", "", "model for inspection/search tasks")
 	root.PersistentFlags().StringVar(&opts.editModel, "edit-model", "", "model for coding/edit tasks")
 	root.PersistentFlags().StringVar(&opts.deepModel, "deep-model", "", "model for architecture/security/deep tasks")
 	root.PersistentFlags().IntVar(&opts.maxSteps, "max-steps", 0, "maximum agent loop steps")
 	root.PersistentFlags().IntVar(&opts.maxMessages, "max-messages", 0, "maximum context messages")
 	root.PersistentFlags().IntVar(&opts.maxContext, "max-context-tokens", 0, "estimated maximum context tokens")
+	root.PersistentFlags().IntVar(&opts.maxInstructions, "max-instruction-bytes", 0, "maximum bytes of project instruction files to add to the system prompt")
 	root.PersistentFlags().IntVar(&opts.maxOutput, "max-output-tokens", 0, "maximum model output tokens")
 	root.PersistentFlags().StringVar(&opts.reasoning, "reasoning", "", "reasoning effort for providers that support it")
 	root.PersistentFlags().BoolVar(&opts.store, "store", false, "allow provider-side response storage when supported")
 	root.PersistentFlags().BoolVar(&opts.stream, "stream", false, "stream model output when the provider supports it")
 	root.PersistentFlags().StringVar(&opts.approval, "approval", "", "tool approval mode: auto, ask, never")
 	root.PersistentFlags().StringVar(&opts.sandbox, "sandbox", "", "sandbox profile: read-only, workspace-write, danger-full-access")
+	root.PersistentFlags().StringVar(&opts.mode, "mode", "", "agent mode: inspect, edit, repair, refactor")
+	root.PersistentFlags().StringSliceVar(&opts.contextFiles, "context-file", nil, "file allowed in edit/refactor context cart; repeatable")
 	root.PersistentFlags().StringVar(&opts.sessionID, "session", "", "session id for persistent conversations")
 
 	runCmd := &cobra.Command{
@@ -91,26 +104,29 @@ func newRootCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			provider, model, err := buildProvider(runtimeCfg.Provider, runtimeCfg.Model)
+			provider, model, err := buildProviderFromConfig(runtimeCfg)
 			if err != nil {
 				return err
 			}
 			runner, err := agent.New(agent.Config{
-				CWD:          opts.cwd,
-				Model:        model,
-				ModelRoutes:  runtimeCfg.ModelRoutes,
-				MaxSteps:     runtimeCfg.MaxSteps,
-				MaxMessages:  runtimeCfg.MaxMessages,
-				MaxContext:   runtimeCfg.MaxContext,
-				MaxOutput:    runtimeCfg.MaxOutput,
-				Reasoning:    runtimeCfg.Reasoning,
-				Store:        runtimeCfg.StoreResponses,
-				Stream:       opts.stream,
-				ApprovalMode: runtimeCfg.ApprovalMode,
-				Sandbox:      runtimeCfg.Sandbox,
-				Provider:     provider,
-				Input:        os.Stdin,
-				Output:       cmd.OutOrStdout(),
+				CWD:             opts.cwd,
+				Model:           model,
+				ModelRoutes:     runtimeCfg.ModelRoutes,
+				MaxSteps:        runtimeCfg.MaxSteps,
+				MaxMessages:     runtimeCfg.MaxMessages,
+				MaxContext:      runtimeCfg.MaxContext,
+				MaxInstructions: runtimeCfg.MaxInstructions,
+				MaxOutput:       runtimeCfg.MaxOutput,
+				Reasoning:       runtimeCfg.Reasoning,
+				Store:           runtimeCfg.StoreResponses,
+				Stream:          opts.stream,
+				ApprovalMode:    runtimeCfg.ApprovalMode,
+				Sandbox:         runtimeCfg.Sandbox,
+				Mode:            runtimeCfg.Mode,
+				ContextFiles:    runtimeCfg.ContextFiles,
+				Provider:        provider,
+				Input:           os.Stdin,
+				Output:          cmd.OutOrStdout(),
 			})
 			if err != nil {
 				return err
@@ -133,6 +149,7 @@ func newRootCommand() *cobra.Command {
 			if saveErr := store.Save(saved); saveErr != nil {
 				return saveErr
 			}
+			printContextDebug(cmd.OutOrStdout(), result.ContextDebug)
 			fmt.Fprintf(cmd.OutOrStdout(), "session: %s\n", saved.ID)
 			return err
 		},
@@ -146,10 +163,39 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newDiffCommand(&opts))
 	root.AddCommand(newPolicyCommand())
 	root.AddCommand(newToolsCommand())
-	root.AddCommand(newDoctorCommand())
+	root.AddCommand(newInstructionsCommand(&opts))
+	root.AddCommand(newDoctorCommand(&opts))
 	root.AddCommand(newConfigCommand(&opts))
 	root.AddCommand(newSessionsCommand(&opts))
 	return root
+}
+
+type programWriter struct {
+	p **tea.Program
+}
+
+func (pw *programWriter) Write(b []byte) (n int, err error) {
+	if pw.p != nil && *pw.p != nil {
+		(*pw.p).Send(tui.StreamMsg(string(b)))
+	}
+	return len(b), nil
+}
+
+func newTUIApprover(p **tea.Program) agent.ApprovalFunc {
+	return func(req agent.ApprovalRequest) (bool, error) {
+		if p == nil || *p == nil {
+			return false, fmt.Errorf("approval UI is not ready")
+		}
+		reply := make(chan bool, 1)
+		(*p).Send(tui.ApprovalRequestMsg{
+			Tool:   req.Tool,
+			Risk:   req.Risk,
+			Reason: req.Reason,
+			Args:   req.Args,
+			Reply:  reply,
+		})
+		return <-reply, nil
+	}
 }
 
 func newTUICommand(opts *options) *cobra.Command {
@@ -158,10 +204,6 @@ func newTUICommand(opts *options) *cobra.Command {
 		Short: "Start the Bubble Tea terminal UI",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			runtimeCfg, err := effectiveConfig(cmd, *opts)
-			if err != nil {
-				return err
-			}
-			provider, model, err := buildProvider(runtimeCfg.Provider, runtimeCfg.Model)
 			if err != nil {
 				return err
 			}
@@ -178,8 +220,21 @@ func newTUICommand(opts *options) *cobra.Command {
 				{Name: "/clear", Description: "Clear chat history"},
 				{Name: "/status", Description: "Show workspace status"},
 				{Name: "/compact", Description: "Compact chat history to reduce tokens"},
+				{Name: "/settings", Description: "Open settings form"},
+				{Name: "/provider", Description: "Set provider: mock/openai/chat/ollama/anthropic/gemini"},
+				{Name: "/model", Description: "Set the active model name"},
+				{Name: "/endpoint", Description: "Set provider endpoint base URL"},
+				{Name: "/reasoning", Description: "Set reasoning effort: minimal/low/medium/high"},
+				{Name: "/limits", Description: "Set token/step budgets"},
+				{Name: "/approval", Description: "Set approval mode: auto/ask/never"},
+				{Name: "/sandbox", Description: "Set sandbox: read-only/workspace-write/danger-full-access"},
+				{Name: "/mode", Description: "Set mode: inspect/edit/repair/refactor"},
+				{Name: "/cart", Description: "Show or add context cart files"},
+				{Name: "/attach", Description: "Attach an image to the next model request"},
+				{Name: "/attachments", Description: "Show pending image attachments"},
 				{Name: "/doctor", Description: "Check local runtime support"},
 				{Name: "/tools", Description: "List available agent tools"},
+				{Name: "/instructions", Description: "Show project instruction files"},
 				{Name: "/sessions", Description: "List saved workspace sessions"},
 				{Name: "/checkpoint list", Description: "List workspace checkpoints"},
 				{Name: "/checkpoint create", Description: "Create a workspace checkpoint"},
@@ -194,12 +249,16 @@ func newTUICommand(opts *options) *cobra.Command {
 				{Name: "/quit", Description: "Exit the TUI (alias)"},
 			}
 
+			var p *tea.Program
+			pw := &programWriter{p: &p}
+			pendingAttachments := []llm.Attachment{}
+
 			handler := func(input string) (string, error) {
 				trimmed := strings.TrimSpace(input)
 				if strings.HasPrefix(trimmed, "/") && !strings.HasPrefix(trimmed, "/exit") && !strings.HasPrefix(trimmed, "/quit") && !strings.HasPrefix(trimmed, "/clear") {
 					args := strings.Fields(trimmed)
 					cmdName := args[0]
-					
+
 					switch cmdName {
 					case "/help":
 						var helpOut strings.Builder
@@ -223,6 +282,84 @@ func newTUICommand(opts *options) *cobra.Command {
 						}
 						return fmt.Sprintf("compacted: messages %d -> %d, estimated tokens %d -> %d",
 							stats.OriginalMessages, stats.PackedMessages, stats.OriginalTokens, stats.PackedTokens), nil
+					case "/settings":
+						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+					case "/set":
+						if err := applyTUISet(&runtimeCfg, args[1:]); err != nil {
+							return "", err
+						}
+						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+					case "/provider":
+						if len(args) < 2 {
+							return "usage: /provider mock|openai|chat|ollama|anthropic|gemini", nil
+						}
+						runtimeCfg.Provider = args[1]
+						runtimeCfg.Model = ""
+						if runtimeCfg.Provider == "mock" {
+							runtimeCfg.Model = "mock-agent"
+						}
+						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+					case "/model":
+						if len(args) < 2 {
+							return "usage: /model <model-name>", nil
+						}
+						runtimeCfg.Model = strings.Join(args[1:], " ")
+						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+					case "/endpoint":
+						if len(args) < 2 {
+							return "usage: /endpoint <base-url>", nil
+						}
+						setProviderBaseURL(&runtimeCfg, runtimeCfg.Provider, strings.Join(args[1:], " "))
+						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+					case "/reasoning":
+						if len(args) < 2 {
+							return "usage: /reasoning minimal|low|medium|high", nil
+						}
+						runtimeCfg.Reasoning = args[1]
+						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+					case "/limits":
+						if len(args) == 1 {
+							return "usage: /limits context 32000 | output 4096 | steps 12 | messages 40 | instructions 12000", nil
+						}
+						if err := applyTUILimit(&runtimeCfg, args[1:]); err != nil {
+							return "", err
+						}
+						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+					case "/approval":
+						if len(args) < 2 {
+							return "usage: /approval auto|ask|never", nil
+						}
+						runtimeCfg.ApprovalMode = args[1]
+						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+					case "/sandbox":
+						if len(args) < 2 {
+							return "usage: /sandbox read-only|workspace-write|danger-full-access", nil
+						}
+						runtimeCfg.Sandbox = args[1]
+						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+					case "/mode":
+						if len(args) < 2 {
+							return "usage: /mode inspect|edit|repair|refactor", nil
+						}
+						runtimeCfg.Mode = args[1]
+						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+					case "/cart":
+						if len(args) >= 3 && args[1] == "add" {
+							runtimeCfg.ContextFiles = append(runtimeCfg.ContextFiles, args[2:]...)
+						}
+						return formatContextCart(runtimeCfg.ContextFiles), nil
+					case "/attach":
+						if len(args) < 2 {
+							return "usage: /attach path/to/image.png", nil
+						}
+						attachment, err := loadImageAttachment(opts.cwd, strings.Join(args[1:], " "))
+						if err != nil {
+							return "", err
+						}
+						pendingAttachments = append(pendingAttachments, attachment)
+						return fmt.Sprintf("attached %s (%s, %d base64 bytes). It will be sent with the next model request only.", attachment.Name, attachment.MIMEType, len(attachment.Data)), nil
+					case "/attachments":
+						return formatAttachments(pendingAttachments), nil
 					case "/diff":
 						if len(args) >= 2 && args[1] == "apply" {
 							hasYes := false
@@ -237,58 +374,85 @@ func newTUICommand(opts *options) *cobra.Command {
 							}
 						}
 						fallthrough
-					case "/doctor", "/tools", "/sessions", "/checkpoint", "/policy", "/config":
+					case "/doctor", "/tools", "/instructions", "/sessions", "/checkpoint", "/policy", "/config":
 						cliCmdName := strings.TrimPrefix(cmdName, "/")
 						var out strings.Builder
 						subCmd := newRootCommand()
 						subCmd.SetArgs(append([]string{cliCmdName}, args[1:]...))
-						subCmd.SetOut(&out)
-						subCmd.SetErr(&out)
+						subCmd.SetOut(io.MultiWriter(&out, pw))
+						subCmd.SetErr(io.MultiWriter(&out, pw))
 						err := subCmd.Execute()
 						return strings.TrimSpace(out.String()), err
 					}
 				}
+				provider, model, err := buildProviderFromConfig(runtimeCfg)
+				if err != nil {
+					return "", err
+				}
 				var output strings.Builder
 				runnerWithOutput, err := agent.New(agent.Config{
-					CWD:          opts.cwd,
-					Model:        model,
-					ModelRoutes:  runtimeCfg.ModelRoutes,
-					MaxSteps:     runtimeCfg.MaxSteps,
-					MaxMessages:  runtimeCfg.MaxMessages,
-					MaxContext:   runtimeCfg.MaxContext,
-					MaxOutput:    runtimeCfg.MaxOutput,
-					Reasoning:    runtimeCfg.Reasoning,
-					Store:        runtimeCfg.StoreResponses,
-					Stream:       false,
-					ApprovalMode: runtimeCfg.ApprovalMode,
-					Sandbox:      runtimeCfg.Sandbox,
-					Provider:     provider,
-					Input:        os.Stdin,
-					Output:       &output,
+					CWD:             opts.cwd,
+					Model:           model,
+					ModelRoutes:     runtimeCfg.ModelRoutes,
+					MaxSteps:        runtimeCfg.MaxSteps,
+					MaxMessages:     runtimeCfg.MaxMessages,
+					MaxContext:      runtimeCfg.MaxContext,
+					MaxInstructions: runtimeCfg.MaxInstructions,
+					MaxOutput:       runtimeCfg.MaxOutput,
+					Reasoning:       runtimeCfg.Reasoning,
+					Store:           runtimeCfg.StoreResponses,
+					Stream:          true,
+					ApprovalMode:    runtimeCfg.ApprovalMode,
+					Sandbox:         runtimeCfg.Sandbox,
+					Mode:            runtimeCfg.Mode,
+					ContextFiles:    runtimeCfg.ContextFiles,
+					Provider:        provider,
+					Input:           os.Stdin,
+					Output:          io.MultiWriter(&output, pw),
+					Approver:        newTUIApprover(&p),
 				})
 				if err != nil {
 					return "", err
 				}
-				result, err := runnerWithOutput.RunConversation(context.Background(), saved.Messages, input)
+				attachments := pendingAttachments
+				pendingAttachments = nil
+				result, err := runnerWithOutput.RunConversationWithAttachments(context.Background(), saved.Messages, input, attachments)
 				saved.Messages = result.Messages
 				if saveErr := store.Save(saved); saveErr != nil {
 					return "", saveErr
 				}
-				if strings.TrimSpace(output.String()) != "" {
-					return strings.TrimSpace(output.String()), err
+				captured := strings.TrimSpace(output.String())
+				debug := formatContextDebug(result.ContextDebug)
+				if strings.Contains(captured, "tool:") || strings.Contains(captured, "tool error:") || strings.Contains(captured, "usage:") {
+					return strings.TrimSpace(output.String() + "\n\n" + debug), err
 				}
-				return result.Final, err
+				return strings.TrimSpace(result.Final + "\n\n" + debug), err
 			}
 
 			tuiModel := tui.New(tui.Config{
-				Title:     "Agent CLI",
-				SessionID: saved.ID,
-				Provider:  runtimeCfg.Provider,
-				Model:     model,
-				Handler:   handler,
-				Commands:  tuiCommands,
+				Title:           "Klyra",
+				SessionID:       saved.ID,
+				Provider:        runtimeCfg.Provider,
+				Model:           runtimeCfg.Model,
+				BaseURL:         providerBaseURL(runtimeCfg, runtimeCfg.Provider),
+				Reasoning:       runtimeCfg.Reasoning,
+				Sandbox:         runtimeCfg.Sandbox,
+				Approval:        runtimeCfg.ApprovalMode,
+				Mode:            runtimeCfg.Mode,
+				CartCount:       len(runtimeCfg.ContextFiles),
+				MaxContext:      runtimeCfg.MaxContext,
+				MaxOutput:       runtimeCfg.MaxOutput,
+				MaxSteps:        runtimeCfg.MaxSteps,
+				MaxMessages:     runtimeCfg.MaxMessages,
+				MaxInstructions: runtimeCfg.MaxInstructions,
+				FastModel:       runtimeCfg.ModelRoutes["fast"],
+				EditModel:       runtimeCfg.ModelRoutes["edit"],
+				DeepModel:       runtimeCfg.ModelRoutes["deep"],
+				Handler:         handler,
+				Commands:        tuiCommands,
 			})
-			_, err = tea.NewProgram(tuiModel).Run()
+			p = tea.NewProgram(tuiModel)
+			_, err = p.Run()
 			return err
 		},
 	}
@@ -303,6 +467,185 @@ func tuiStatus(cwd string) (string, error) {
 		return "clean", nil
 	}
 	return status.Output, nil
+}
+
+func formatTUISettings(cfg appconfig.Config, attachments []llm.Attachment) string {
+	var builder strings.Builder
+	builder.WriteString("## Settings\n\n")
+	fmt.Fprintf(&builder, "- provider: `%s`\n", valueOrString(cfg.Provider, "mock"))
+	fmt.Fprintf(&builder, "- model: `%s`\n", valueOrString(cfg.Model, "provider env / routed"))
+	fmt.Fprintf(&builder, "- endpoint: `%s`\n", valueOrString(providerBaseURL(cfg, cfg.Provider), "provider default/env"))
+	fmt.Fprintf(&builder, "- reasoning: `%s`\n", valueOrString(cfg.Reasoning, "default"))
+	fmt.Fprintf(&builder, "- sandbox: `%s`\n", valueOrString(cfg.Sandbox, "workspace-write"))
+	fmt.Fprintf(&builder, "- mode: `%s`\n", valueOrString(cfg.Mode, "edit"))
+	fmt.Fprintf(&builder, "- context cart: `%d files`\n", len(cfg.ContextFiles))
+	fmt.Fprintf(&builder, "- approval: `%s`\n", valueOrString(cfg.ApprovalMode, "auto"))
+	fmt.Fprintf(&builder, "- max context tokens: `%d`\n", cfg.MaxContext)
+	fmt.Fprintf(&builder, "- max output tokens: `%d`\n", cfg.MaxOutput)
+	fmt.Fprintf(&builder, "- max steps: `%d`\n", cfg.MaxSteps)
+	fmt.Fprintf(&builder, "- max messages: `%d`\n", cfg.MaxMessages)
+	fmt.Fprintf(&builder, "- max instruction bytes: `%d`\n", cfg.MaxInstructions)
+	fmt.Fprintf(&builder, "- pending images: `%d`\n", len(attachments))
+	builder.WriteString("\nUse `/provider`, `/model`, `/reasoning`, `/limits`, `/approval`, `/sandbox`, `/mode`, `/cart add`, and `/attach` to change this without leaving Klyra.")
+	return builder.String()
+}
+
+func applyTUISet(cfg *appconfig.Config, args []string) error {
+	for _, arg := range args {
+		key, value, ok := strings.Cut(arg, "=")
+		if !ok {
+			return fmt.Errorf("settings value must use key=value: %s", arg)
+		}
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "provider":
+			cfg.Provider = value
+			cfg.Model = ""
+			if value == "mock" {
+				cfg.Model = "mock-agent"
+			}
+		case "model":
+			cfg.Model = value
+		case "endpoint", "base_url", "base-url":
+			setProviderBaseURL(cfg, cfg.Provider, value)
+		case "reasoning":
+			cfg.Reasoning = value
+		case "approval":
+			cfg.ApprovalMode = value
+		case "sandbox":
+			cfg.Sandbox = value
+		case "mode":
+			cfg.Mode = value
+		case "context":
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed <= 0 {
+				return fmt.Errorf("context must be a positive integer")
+			}
+			cfg.MaxContext = parsed
+		case "output":
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed <= 0 {
+				return fmt.Errorf("output must be a positive integer")
+			}
+			cfg.MaxOutput = parsed
+		default:
+			return fmt.Errorf("unknown setting %q", key)
+		}
+	}
+	return nil
+}
+
+func formatContextCart(files []string) string {
+	if len(files) == 0 {
+		return "context cart is empty. Use `/cart add path/to/file` before edit/refactor mode writes."
+	}
+	var lines []string
+	lines = append(lines, "context cart:")
+	for _, file := range files {
+		lines = append(lines, "- "+file)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func printContextDebug(out io.Writer, debug agent.ContextDebug) {
+	text := formatContextDebug(debug)
+	if strings.TrimSpace(text) != "" {
+		fmt.Fprintln(out, text)
+	}
+}
+
+func formatContextDebug(debug agent.ContextDebug) string {
+	if debug.Mode == "" && len(debug.VisibleTools) == 0 && len(debug.Risks) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("## Context Debugger\n\n")
+	fmt.Fprintf(&builder, "- mode: `%s`\n", valueOrString(debug.Mode, "edit"))
+	if len(debug.ContextFiles) == 0 {
+		builder.WriteString("- context cart: empty\n")
+	} else {
+		builder.WriteString("- context cart:\n")
+		for _, file := range debug.ContextFiles {
+			builder.WriteString("  - `" + file + "`\n")
+		}
+	}
+	if len(debug.VisibleTools) > 0 {
+		builder.WriteString("- model could use: `" + strings.Join(debug.VisibleTools, "`, `") + "`\n")
+	}
+	if len(debug.Risks) > 0 {
+		builder.WriteString("- risks:\n")
+		for _, risk := range debug.Risks {
+			builder.WriteString("  - " + risk + "\n")
+		}
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func applyTUILimit(cfg *appconfig.Config, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: /limits context|output|steps|messages|instructions <number>")
+	}
+	value, err := strconv.Atoi(args[1])
+	if err != nil || value <= 0 {
+		return fmt.Errorf("limit must be a positive integer")
+	}
+	switch strings.ToLower(args[0]) {
+	case "context", "ctx":
+		cfg.MaxContext = value
+	case "output", "out":
+		cfg.MaxOutput = value
+	case "steps":
+		cfg.MaxSteps = value
+	case "messages":
+		cfg.MaxMessages = value
+	case "instructions", "instruction-bytes":
+		cfg.MaxInstructions = value
+	default:
+		return fmt.Errorf("unknown limit %q", args[0])
+	}
+	return nil
+}
+
+func loadImageAttachment(cwd, path string) (llm.Attachment, error) {
+	path = strings.Trim(path, "\"'")
+	target := path
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(cwd, target)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return llm.Attachment{}, err
+	}
+	mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(target)))
+	if idx := strings.Index(mimeType, ";"); idx >= 0 {
+		mimeType = mimeType[:idx]
+	}
+	if !strings.HasPrefix(mimeType, "image/") {
+		return llm.Attachment{}, fmt.Errorf("%s is not a supported image file", path)
+	}
+	return llm.Attachment{
+		Type:     "image",
+		MIMEType: mimeType,
+		Name:     filepath.Base(target),
+		Data:     base64.StdEncoding.EncodeToString(data),
+	}, nil
+}
+
+func formatAttachments(attachments []llm.Attachment) string {
+	if len(attachments) == 0 {
+		return "no pending image attachments"
+	}
+	var lines []string
+	for i, attachment := range attachments {
+		lines = append(lines, fmt.Sprintf("%d. %s `%s` %d base64 bytes", i+1, attachment.Name, attachment.MIMEType, len(attachment.Data)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func valueOrString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func newDiffCommand(opts *options) *cobra.Command {
@@ -533,7 +876,7 @@ func newChatCommand(opts *options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			provider, model, err := buildProvider(runtimeCfg.Provider, runtimeCfg.Model)
+			provider, model, err := buildProviderFromConfig(runtimeCfg)
 			if err != nil {
 				return err
 			}
@@ -546,21 +889,24 @@ func newChatCommand(opts *options) *cobra.Command {
 				return err
 			}
 			runner, err := agent.New(agent.Config{
-				CWD:          opts.cwd,
-				Model:        model,
-				ModelRoutes:  runtimeCfg.ModelRoutes,
-				MaxSteps:     runtimeCfg.MaxSteps,
-				MaxMessages:  runtimeCfg.MaxMessages,
-				MaxContext:   runtimeCfg.MaxContext,
-				MaxOutput:    runtimeCfg.MaxOutput,
-				Reasoning:    runtimeCfg.Reasoning,
-				Store:        runtimeCfg.StoreResponses,
-				Stream:       opts.stream,
-				ApprovalMode: runtimeCfg.ApprovalMode,
-				Sandbox:      runtimeCfg.Sandbox,
-				Provider:     provider,
-				Input:        os.Stdin,
-				Output:       cmd.OutOrStdout(),
+				CWD:             opts.cwd,
+				Model:           model,
+				ModelRoutes:     runtimeCfg.ModelRoutes,
+				MaxSteps:        runtimeCfg.MaxSteps,
+				MaxMessages:     runtimeCfg.MaxMessages,
+				MaxContext:      runtimeCfg.MaxContext,
+				MaxInstructions: runtimeCfg.MaxInstructions,
+				MaxOutput:       runtimeCfg.MaxOutput,
+				Reasoning:       runtimeCfg.Reasoning,
+				Store:           runtimeCfg.StoreResponses,
+				Stream:          opts.stream,
+				ApprovalMode:    runtimeCfg.ApprovalMode,
+				Sandbox:         runtimeCfg.Sandbox,
+				Mode:            runtimeCfg.Mode,
+				ContextFiles:    runtimeCfg.ContextFiles,
+				Provider:        provider,
+				Input:           os.Stdin,
+				Output:          cmd.OutOrStdout(),
 			})
 			if err != nil {
 				return err
@@ -611,6 +957,7 @@ func newChatCommand(opts *options) *cobra.Command {
 				if saveErr := store.Save(saved); saveErr != nil {
 					return saveErr
 				}
+				printContextDebug(cmd.OutOrStdout(), result.ContextDebug)
 				if err != nil {
 					fmt.Fprintf(cmd.OutOrStdout(), "error: %v\n", err)
 				}
@@ -638,11 +985,55 @@ func newToolsCommand() *cobra.Command {
 	}
 }
 
-func newDoctorCommand() *cobra.Command {
+func newInstructionsCommand(opts *options) *cobra.Command {
+	var showContent bool
+	cmd := &cobra.Command{
+		Use:   "instructions",
+		Short: "Show project instruction files loaded into the system prompt",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			runtimeCfg, err := effectiveConfig(cmd, *opts)
+			if err != nil {
+				return err
+			}
+			result, err := instructions.Load(opts.cwd, runtimeCfg.MaxInstructions)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if len(result.Files) == 0 {
+				fmt.Fprintln(out, "no project instructions found")
+				return nil
+			}
+			for _, file := range result.Files {
+				suffix := ""
+				if file.Truncated {
+					suffix = " truncated"
+				}
+				fmt.Fprintf(out, "%s bytes=%d%s\n", file.Path, file.Bytes, suffix)
+			}
+			if result.Truncated {
+				fmt.Fprintf(out, "instruction budget reached: %d bytes\n", runtimeCfg.MaxInstructions)
+			}
+			if showContent {
+				fmt.Fprintln(out, "\ncontent:")
+				fmt.Fprintln(out, result.Content)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&showContent, "content", false, "print loaded instruction content")
+	return cmd
+}
+
+func newDoctorCommand(opts *options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
 		Short: "Check local runtime support for agentcli",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			runtimeCfg, err := effectiveConfig(cmd, *opts)
+			if err != nil {
+				return err
+			}
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "agentcli: %s\n", version.Version)
 			fmt.Fprintf(out, "go: %s\n", runtime.Version())
@@ -657,6 +1048,22 @@ func newDoctorCommand() *cobra.Command {
 			printEnvStatus(out, "ANTHROPIC_API_KEY")
 			printEnvStatus(out, "ANTHROPIC_MODEL")
 			printEnvStatus(out, "ANTHROPIC_BASE_URL")
+			printEnvStatus(out, "GEMINI_API_KEY")
+			printEnvStatus(out, "GEMINI_MODEL")
+			printEnvStatus(out, "GEMINI_BASE_URL")
+			projectInstructions, err := instructions.Load(opts.cwd, runtimeCfg.MaxInstructions)
+			if err != nil {
+				return err
+			}
+			if len(projectInstructions.Files) == 0 {
+				fmt.Fprintln(out, "project_instructions: none")
+			} else {
+				names := make([]string, 0, len(projectInstructions.Files))
+				for _, file := range projectInstructions.Files {
+					names = append(names, file.Path)
+				}
+				fmt.Fprintf(out, "project_instructions: %s (%d bytes)\n", strings.Join(names, ", "), projectInstructions.Bytes)
+			}
 			return nil
 		},
 	}
@@ -766,6 +1173,9 @@ func effectiveConfig(cmd *cobra.Command, opts options) (appconfig.Config, error)
 	if flags.Changed("model") {
 		cfg.Model = opts.model
 	}
+	if flags.Changed("base-url") {
+		setProviderBaseURL(&cfg, cfg.Provider, opts.baseURL)
+	}
 	if cfg.ModelRoutes == nil {
 		cfg.ModelRoutes = map[string]string{}
 	}
@@ -787,6 +1197,9 @@ func effectiveConfig(cmd *cobra.Command, opts options) (appconfig.Config, error)
 	if flags.Changed("max-context-tokens") {
 		cfg.MaxContext = opts.maxContext
 	}
+	if flags.Changed("max-instruction-bytes") {
+		cfg.MaxInstructions = opts.maxInstructions
+	}
 	if flags.Changed("max-output-tokens") {
 		cfg.MaxOutput = opts.maxOutput
 	}
@@ -798,6 +1211,12 @@ func effectiveConfig(cmd *cobra.Command, opts options) (appconfig.Config, error)
 	}
 	if flags.Changed("sandbox") {
 		cfg.Sandbox = opts.sandbox
+	}
+	if flags.Changed("mode") {
+		cfg.Mode = opts.mode
+	}
+	if flags.Changed("context-file") {
+		cfg.ContextFiles = append([]string(nil), opts.contextFiles...)
 	}
 	if flags.Changed("store") {
 		cfg.StoreResponses = opts.store
@@ -823,6 +1242,14 @@ func printEnvStatus(out interface{ Write([]byte) (int, error) }, name string) {
 }
 
 func buildProvider(name, model string) (llm.Provider, string, error) {
+	return buildProviderWithBaseURL(name, model, "")
+}
+
+func buildProviderFromConfig(cfg appconfig.Config) (llm.Provider, string, error) {
+	return buildProviderWithBaseURL(cfg.Provider, cfg.Model, providerBaseURL(cfg, cfg.Provider))
+}
+
+func buildProviderWithBaseURL(name, model, baseURL string) (llm.Provider, string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(name))
 	switch normalized {
 	case "", "mock":
@@ -831,7 +1258,10 @@ func buildProvider(name, model string) (llm.Provider, string, error) {
 		}
 		return llm.NewMockProvider(), model, nil
 	case "openai", "responses":
-		provider, err := llm.NewResponsesProviderFromEnv()
+		if strings.TrimSpace(baseURL) == "" {
+			baseURL = os.Getenv("OPENAI_BASE_URL")
+		}
+		provider, err := llm.NewResponsesProvider(os.Getenv("OPENAI_API_KEY"), baseURL)
 		if err != nil {
 			return nil, "", err
 		}
@@ -840,7 +1270,10 @@ func buildProvider(name, model string) (llm.Provider, string, error) {
 		}
 		return provider, model, nil
 	case "chat", "chat-completions", "openai-chat", "openai-compatible":
-		provider, err := llm.NewOpenAIProviderFromEnv()
+		if strings.TrimSpace(baseURL) == "" {
+			baseURL = os.Getenv("OPENAI_BASE_URL")
+		}
+		provider, err := llm.NewOpenAIProvider(os.Getenv("OPENAI_API_KEY"), baseURL)
 		if err != nil {
 			return nil, "", err
 		}
@@ -849,7 +1282,9 @@ func buildProvider(name, model string) (llm.Provider, string, error) {
 		}
 		return provider, model, nil
 	case "ollama":
-		baseURL := os.Getenv("OLLAMA_BASE_URL")
+		if strings.TrimSpace(baseURL) == "" {
+			baseURL = os.Getenv("OLLAMA_BASE_URL")
+		}
 		if strings.TrimSpace(baseURL) == "" {
 			baseURL = "http://localhost:11434/v1"
 		}
@@ -862,7 +1297,10 @@ func buildProvider(name, model string) (llm.Provider, string, error) {
 		}
 		return provider, model, nil
 	case "anthropic", "claude":
-		provider, err := llm.NewAnthropicProviderFromEnv()
+		if strings.TrimSpace(baseURL) == "" {
+			baseURL = os.Getenv("ANTHROPIC_BASE_URL")
+		}
+		provider, err := llm.NewAnthropicProvider(os.Getenv("ANTHROPIC_API_KEY"), baseURL)
 		if err != nil {
 			return nil, "", err
 		}
@@ -873,7 +1311,40 @@ func buildProvider(name, model string) (llm.Provider, string, error) {
 			return nil, "", fmt.Errorf("model is required for provider %q; pass --model or set ANTHROPIC_MODEL", normalized)
 		}
 		return provider, model, nil
+	case "gemini", "google":
+		if strings.TrimSpace(baseURL) == "" {
+			baseURL = os.Getenv("GEMINI_BASE_URL")
+		}
+		provider, err := llm.NewGeminiProvider(os.Getenv("GEMINI_API_KEY"), baseURL)
+		if err != nil {
+			return nil, "", err
+		}
+		if strings.TrimSpace(model) == "" || model == "mock-agent" {
+			model = os.Getenv("GEMINI_MODEL")
+		}
+		if strings.TrimSpace(model) == "" {
+			return nil, "", fmt.Errorf("model is required for provider %q; pass --model or set GEMINI_MODEL", normalized)
+		}
+		return provider, model, nil
 	default:
 		return nil, "", fmt.Errorf("provider %q is not implemented yet", name)
 	}
+}
+
+func providerBaseURL(cfg appconfig.Config, provider string) string {
+	if cfg.BaseURLs == nil {
+		return ""
+	}
+	return cfg.BaseURLs[strings.ToLower(strings.TrimSpace(provider))]
+}
+
+func setProviderBaseURL(cfg *appconfig.Config, provider, baseURL string) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		provider = "openai"
+	}
+	if cfg.BaseURLs == nil {
+		cfg.BaseURLs = map[string]string{}
+	}
+	cfg.BaseURLs[provider] = strings.TrimSpace(baseURL)
 }
