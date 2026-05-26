@@ -359,16 +359,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			isAgentStream := strings.Contains(outText, "assistant: ") || strings.Contains(outText, "tool: ")
 			if !isAgentStream {
 				text := outText
-				if m.renderer != nil && strings.HasPrefix(text, "#") {
+				if m.renderer != nil && (strings.HasPrefix(text, "#") || strings.HasPrefix(text, "-") || strings.HasPrefix(text, "*") || strings.Contains(text, "`")) {
 					if rendered, errRender := m.renderer.Render(text); errRender == nil {
 						text = strings.TrimRight(rendered, " \n\r\t")
 					}
 				}
 				for _, line := range strings.Split(text, "\n") {
-					m.lines = append(m.lines, line)
+					m.lines = append(m.lines, "md: "+line)
 				}
 			} else {
 				var assistantBlock []string
+				var mdBlock []string
+
 				flushAssistant := func() {
 					if len(assistantBlock) > 0 {
 						text := strings.Join(assistantBlock, "\n")
@@ -382,27 +384,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 
+				flushMd := func() {
+					if len(mdBlock) > 0 {
+						text := strings.Join(mdBlock, "\n")
+						if m.renderer != nil && (strings.HasPrefix(text, "#") || strings.HasPrefix(text, "-") || strings.HasPrefix(text, "*") || strings.Contains(text, "`")) {
+							if rendered, errRender := m.renderer.Render(text); errRender == nil {
+								text = strings.TrimRight(rendered, " \n\r\t")
+							}
+						}
+						for _, line := range strings.Split(text, "\n") {
+							m.lines = append(m.lines, "md: "+line)
+						}
+						mdBlock = nil
+					}
+				}
+
+				inAssistant := false
+
 				for _, line := range strings.Split(outText, "\n") {
 					if strings.HasPrefix(line, "assistant: ") {
+						flushMd()
+						inAssistant = true
 						assistantBlock = append(assistantBlock, strings.TrimPrefix(line, "assistant: "))
-					} else if strings.HasPrefix(line, "tool: ") || strings.HasPrefix(line, "tool rejected:") || strings.HasPrefix(line, "usage:") {
+					} else if strings.HasPrefix(line, "tool: ") || strings.HasPrefix(line, "tool rejected:") || strings.HasPrefix(line, "tool error:") || strings.HasPrefix(line, "usage:") || strings.HasPrefix(line, "policy:") {
 						flushAssistant()
+						flushMd()
+						inAssistant = false
 						m.lines = append(m.lines, line)
 					} else if strings.TrimSpace(line) == "" {
-						if len(assistantBlock) > 0 {
-							assistantBlock = append(assistantBlock, "")
+						if inAssistant {
+							if len(assistantBlock) > 0 {
+								assistantBlock = append(assistantBlock, "")
+							} else {
+								m.lines = append(m.lines, "")
+							}
 						} else {
-							m.lines = append(m.lines, "")
+							if len(mdBlock) > 0 {
+								mdBlock = append(mdBlock, "")
+							} else {
+								m.lines = append(m.lines, "")
+							}
 						}
 					} else {
-						if len(assistantBlock) > 0 {
+						if inAssistant {
 							assistantBlock = append(assistantBlock, line)
 						} else {
-							m.lines = append(m.lines, line)
+							mdBlock = append(mdBlock, line)
 						}
 					}
 				}
 				flushAssistant()
+				flushMd()
 			}
 		}
 		m.syncViewport(true)
@@ -476,15 +508,17 @@ func (m Model) buildFormattedLines() []string {
 		} else if strings.HasPrefix(line, "system: ") {
 			formattedLines = append(formattedLines, systemMsgStyle.Render("  "+systemPrefix+" "+line[8:]))
 		} else if strings.HasPrefix(line, "tool: ") {
-			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorEmerald).Render("  🛠️  "+line))
+			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorEmerald).Render("  tool: "+line[6:]))
 		} else if strings.HasPrefix(line, "tool rejected: ") {
-			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorRed).Bold(true).Render("  ❌ "+line))
+			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorRed).Bold(true).Render("  tool rejected: "+line[15:]))
 		} else if strings.HasPrefix(line, "tool error: ") {
-			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorRed).Bold(true).Render("  ⚠️  "+line))
+			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorRed).Bold(true).Render("  tool error: "+line[12:]))
 		} else if strings.HasPrefix(line, "usage: ") {
-			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorDim).Render("  📊 "+line))
+			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorDim).Render("  usage: "+line[7:]))
 		} else if strings.HasPrefix(line, "policy: ") {
-			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorAmber).Render("  🛡️  "+line))
+			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorAmber).Render("  policy: "+line[8:]))
+		} else if strings.HasPrefix(line, "md: ") {
+			formattedLines = append(formattedLines, "  "+line[4:])
 		} else if line == "" {
 			formattedLines = append(formattedLines, "")
 		} else {
