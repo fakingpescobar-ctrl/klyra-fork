@@ -1,3 +1,6 @@
+<img width="1440" height="850" alt="image" src="https://github.com/user-attachments/assets/251023f8-2460-48f3-93be-1a4f8ff464a9" />
+
+
 # Klyra
 
 Agentic coding CLI prototype in Go.
