@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -394,5 +396,71 @@ func TestModelHistoryNavigation(t *testing.T) {
 	m = updated.(Model)
 	if m.input.Value() != "current typing" {
 		t.Fatalf("expected second Ctrl+N to retrieve temp input 'current typing', got %q", m.input.Value())
+	}
+}
+
+func TestModelAPIKeyPersistence(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "agentcli-env-test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Clean up environment variables to avoid leaks
+	originalKey := os.Getenv("OPENAI_API_KEY")
+	os.Unsetenv("OPENAI_API_KEY")
+	defer func() {
+		if originalKey != "" {
+			os.Setenv("OPENAI_API_KEY", originalKey)
+		} else {
+			os.Unsetenv("OPENAI_API_KEY")
+		}
+	}()
+
+	model := New(Config{
+		CWD: tempDir,
+		Handler: func(input string) (string, error) {
+			return "saved", nil
+		},
+	})
+
+	// 1. Open settings modal
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyF2})
+	m := updated.(Model)
+	if m.activeModal != modalSettings {
+		t.Fatal("expected settings modal to open")
+	}
+
+	// 2. Modify openai_key
+	found := false
+	for idx, f := range m.settingsModal.Fields {
+		if f.Name == "openai_key" {
+			m.settingsModal.Fields[idx].Value = "test-secret-key"
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("openai_key field not found in settings modal")
+	}
+
+	// 3. Save settings
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = executeCmd(cmd)
+
+	// 4. Verify environment variable is set
+	if os.Getenv("OPENAI_API_KEY") != "test-secret-key" {
+		t.Fatalf("expected OPENAI_API_KEY env var to be 'test-secret-key', got %q", os.Getenv("OPENAI_API_KEY"))
+	}
+
+	// 5. Verify .env file is saved
+	envPath := filepath.Join(tempDir, ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("failed to read .env file: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "OPENAI_API_KEY=\"test-secret-key\"") {
+		t.Fatalf("expected .env file to contain key assignment, got:\n%s", content)
 	}
 }

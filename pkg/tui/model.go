@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -92,6 +93,7 @@ type CommandDef struct {
 }
 
 type Config struct {
+	CWD             string
 	Title           string
 	SessionID       string
 	Provider        string
@@ -124,6 +126,7 @@ const (
 )
 
 type Model struct {
+	cwd             string
 	title           string
 	sessionID       string
 	provider        string
@@ -205,6 +208,7 @@ func New(cfg Config) Model {
 	)
 
 	m := Model{
+		cwd:             cfg.CWD,
 		title:           title,
 		sessionID:       cfg.SessionID,
 		provider:        cfg.Provider,
@@ -1091,6 +1095,7 @@ func (m Model) updateSettingsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		cmdText := strings.Join(parts, " ")
 
 		// Handle API keys — set env vars at runtime
+		keysToSave := make(map[string]string)
 		for _, envField := range []struct{ name, envVar string }{
 			{"openai_key", "OPENAI_API_KEY"},
 			{"anthropic_key", "ANTHROPIC_API_KEY"},
@@ -1098,7 +1103,11 @@ func (m Model) updateSettingsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} {
 			if val := sm.GetValue(envField.name); val != "" {
 				_ = setEnvIfChanged(envField.envVar, val)
+				keysToSave[envField.envVar] = val
 			}
+		}
+		if len(keysToSave) > 0 {
+			_ = saveEnvFile(m.cwd, keysToSave)
 		}
 
 		m.closeModal()
@@ -1540,4 +1549,61 @@ func setEnvIfChanged(envVar, value string) error {
 		return nil
 	}
 	return os.Setenv(envVar, value)
+}
+
+func saveEnvFile(dir string, keys map[string]string) error {
+	if dir == "" {
+		dir = "."
+	}
+	path := filepath.Join(dir, ".env")
+	
+	envMap := make(map[string]string)
+	var lines []string
+	
+	if data, err := os.ReadFile(path); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				lines = append(lines, line)
+				continue
+			}
+			rawLine := line
+			trimmed = strings.TrimPrefix(trimmed, "export ")
+			key, _, ok := strings.Cut(trimmed, "=")
+			if !ok {
+				lines = append(lines, line)
+				continue
+			}
+			key = strings.TrimSpace(key)
+			envMap[key] = rawLine
+			lines = append(lines, key)
+		}
+	}
+	
+	for k, v := range keys {
+		quotedVal := fmt.Sprintf("%s=\"%s\"", k, v)
+		envMap[k] = quotedVal
+		
+		found := false
+		for _, line := range lines {
+			if line == k {
+				found = true
+				break
+			}
+		}
+		if !found {
+			lines = append(lines, k)
+		}
+	}
+	
+	var outLines []string
+	for _, line := range lines {
+		if val, exists := envMap[line]; exists {
+			outLines = append(outLines, val)
+		} else {
+			outLines = append(outLines, line)
+		}
+	}
+	
+	return os.WriteFile(path, []byte(strings.Join(outLines, "\n")), 0o600)
 }

@@ -446,6 +446,7 @@ func newTUICommand(opts *options) *cobra.Command {
 			}
 
 			tuiModel := tui.New(tui.Config{
+				CWD:             opts.cwd,
 				Title:           "Klyra",
 				SessionID:       saved.ID,
 				Provider:        runtimeCfg.Provider,
@@ -1175,6 +1176,7 @@ func newSessionsCommand(opts *options) *cobra.Command {
 }
 
 func effectiveConfig(cmd *cobra.Command, opts options) (appconfig.Config, error) {
+	loadEnvFile(opts.cwd)
 	cfg, err := appconfig.Load(opts.configPath)
 	if err != nil {
 		return appconfig.Config{}, err
@@ -1374,4 +1376,37 @@ func setProviderBaseURL(cfg *appconfig.Config, provider, baseURL string) {
 		cfg.BaseURLs = map[string]string{}
 	}
 	cfg.BaseURLs[provider] = strings.TrimSpace(baseURL)
+}
+
+func loadEnvFile(dir string) {
+	if dir == "" {
+		dir = "."
+	}
+	path := filepath.Join(dir, ".env")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+		if (strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"")) ||
+			(strings.HasPrefix(val, "'") && strings.HasSuffix(val, "'")) {
+			if len(val) >= 2 {
+				val = val[1 : len(val)-1]
+			}
+		}
+		if key != "" && os.Getenv(key) == "" {
+			_ = os.Setenv(key, val)
+		}
+	}
 }
