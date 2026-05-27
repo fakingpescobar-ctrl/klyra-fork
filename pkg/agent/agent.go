@@ -385,11 +385,11 @@ func (a *Agent) approveToolCall(call llm.ToolCall) error {
 		}
 	}
 	switch strings.ToLower(strings.TrimSpace(a.cfg.ApprovalMode)) {
-	case "", "auto", "always":
+	case "", "auto":
 		return nil
 	case "never", "deny":
 		return fmt.Errorf("%s requires approval", call.Name)
-	case "ask":
+	case "ask", "always":
 		if a.cfg.Approver != nil {
 			approved, err := a.cfg.Approver(ApprovalRequest{
 				Tool:   call.Name,

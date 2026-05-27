@@ -21,8 +21,8 @@ func CompressOutput(raw string, maxLines int) string {
 		return strings.Join(lines, "\n")
 	}
 
-	important := selectImportantLines(lines, maxLines/2)
 	headCount := maxLines / 4
+	important := selectImportantLines(lines[headCount:], maxLines/2)
 	tailCount := maxLines - headCount - len(important) - 1
 	if tailCount < 0 {
 		tailCount = 0

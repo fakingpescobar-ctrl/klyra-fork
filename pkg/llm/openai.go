@@ -89,6 +89,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 		ToolCalls: parseOpenAIToolCalls(message.ToolCalls),
 		Usage: Usage{
 			InputTokens:     decoded.Usage.PromptTokens,
+			CachedTokens:    decoded.Usage.PromptTokensDetails.CachedTokens,
 			OutputTokens:    decoded.Usage.CompletionTokens,
 			ReasoningTokens: decoded.Usage.CompletionTokensDetails.ReasoningTokens,
 			TotalTokens:     decoded.Usage.TotalTokens,
@@ -257,6 +258,9 @@ type openAIUsage struct {
 	PromptTokens            int `json:"prompt_tokens"`
 	CompletionTokens        int `json:"completion_tokens"`
 	TotalTokens             int `json:"total_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
 	CompletionTokensDetails struct {
 		ReasoningTokens int `json:"reasoning_tokens"`
 	} `json:"completion_tokens_details"`
@@ -380,6 +384,7 @@ func readOpenAIChatStream(reader io.Reader, handler StreamHandler) (Response, er
 		if chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
 			usage = Usage{
 				InputTokens:     chunk.Usage.PromptTokens,
+				CachedTokens:    chunk.Usage.PromptTokensDetails.CachedTokens,
 				OutputTokens:    chunk.Usage.CompletionTokens,
 				ReasoningTokens: chunk.Usage.CompletionTokensDetails.ReasoningTokens,
 				TotalTokens:     chunk.Usage.TotalTokens,
