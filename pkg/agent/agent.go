@@ -206,6 +206,7 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 	var final string
 	var lastUsage llm.Usage
 	var lastDebug ContextDebug
+	failedToolCalls := map[string]tools.Result{}
 	for step := 1; step <= a.cfg.MaxSteps; step++ {
 		specs := a.cfg.Tools.SpecsForTaskMode(task, a.cfg.Mode, a.cfg.ContextFiles)
 		lastDebug = a.contextDebug(specs)
@@ -253,6 +254,17 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 			if err := a.emitToolProgress(ToolProgressEvent{Phase: "queued", Tool: call.Name, ID: call.ID, Args: call.Arguments}); err != nil {
 				return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, err
 			}
+			signature := toolCallSignature(call)
+			if previous, repeated := failedToolCalls[signature]; repeated {
+				err := fmt.Errorf("repeated failed tool call suppressed; previous output: %s; change strategy or use a different focused tool", strings.TrimSpace(previous.Output))
+				observation := toolObservation(call, tools.Result{Output: err.Error()}, err)
+				window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: observation})
+				fmt.Fprintf(a.cfg.Output, "tool error: %v\n", err)
+				if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: "error", Tool: call.Name, ID: call.ID, Args: call.Arguments, Output: err.Error(), Error: err.Error()}); progressErr != nil {
+					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, progressErr
+				}
+				continue
+			}
 			if err := a.approveToolCall(call); err != nil {
 				observation := toolObservation(call, tools.Result{Output: "tool call rejected by approval policy"}, err)
 				window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: observation})
@@ -269,6 +281,7 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 			observation := toolObservation(call, result, err)
 			window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: observation})
 			if err != nil {
+				failedToolCalls[signature] = result
 				fmt.Fprintf(a.cfg.Output, "tool error: %v\n", err)
 			}
 			phase := "done"
@@ -456,6 +469,9 @@ func toolObservation(call llm.ToolCall, result tools.Result, runErr error) strin
 	}
 	if runErr != nil {
 		payload["error"] = runErr.Error()
+		if guidance := toolErrorGuidance(call, result, runErr); guidance != "" {
+			payload["next_action"] = guidance
+		}
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -464,15 +480,52 @@ func toolObservation(call llm.ToolCall, result tools.Result, runErr error) strin
 	return string(data)
 }
 
+func toolCallSignature(call llm.ToolCall) string {
+	data, err := json.Marshal(call.Arguments)
+	if err != nil {
+		return call.Name + ":" + fmt.Sprint(call.Arguments)
+	}
+	return call.Name + ":" + string(data)
+}
+
 func defaultSystemMessage() string {
-	return strings.TrimSpace(`You are Klyra, a local coding agent.
-Work in small verified steps:
-1. Inspect first. Use project_map, search, file_outline, read_symbol, then small read_file slices.
-2. Do not guess file contents or project rules; call tools when unsure.
-3. Edit narrowly. For existing files use replace_symbol, replace_lines, insert_lines, or diff_patch. Use create_file only for new files; do not rewrite existing files from scratch.
-4. Run focused checks after edits when available. Use bash only when needed.
-5. Keep answers concise: what changed, what was checked, and any remaining risk.
+	return strings.TrimSpace(`You are Klyra, a coding agent.
+Operate through the tools, not guesses.
+- First build a small context slice: project_map/search -> file_outline/read_symbol -> short read_file ranges.
+- Keep token use low: prefer symbols, line ranges, repo-map facts, and focused diffs over whole files.
+- Use web_search/fetch_url only for current or external internet facts, and cite URLs in the answer.
+- Treat mcp_* tools as external capabilities: use them only when their name/description fits the task.
+- Existing files: use replace_symbol, replace_lines, insert_lines, or diff_patch. Never overwrite an existing file with write_file.
+- New files: use create_file and include a short description explaining why the file exists.
+- After any tool failure, read the observation, change strategy, and do not repeat the same failed call with the same arguments.
+- Verify focused changes with the cheapest relevant check, then answer with what changed, what was checked, and remaining risk.
 Never edit outside the workspace.`)
+}
+
+func toolErrorGuidance(call llm.ToolCall, result tools.Result, runErr error) string {
+	text := strings.ToLower(runErr.Error() + "\n" + result.Output)
+	switch call.Name {
+	case "diff_preview", "diff_patch":
+		return "Do not retry the same patch. Inspect the target lines, then use replace_lines/replace_symbol for small edits or rebuild the patch with exact context."
+	case "write_file":
+		if strings.Contains(text, "overwrite") || strings.Contains(text, "existing file") {
+			return "Use replace_lines, insert_lines, replace_symbol, or diff_patch for existing files."
+		}
+	case "create_file":
+		if strings.Contains(text, "overwrite") || strings.Contains(text, "exists") {
+			return "The file already exists. Inspect it and edit it with replace_lines/replace_symbol instead of create_file."
+		}
+	case "read_file", "read_symbol", "file_outline":
+		if strings.Contains(text, "no such file") || strings.Contains(text, "not found") {
+			return "Refresh the file path with project_map, list_files, or search before trying again."
+		}
+	case "bash":
+		return "Use the command output to choose a narrower fix or a cheaper diagnostic command."
+	}
+	if strings.Contains(text, "repeated failed tool call suppressed") {
+		return "Choose a different tool or change the arguments before continuing."
+	}
+	return ""
 }
 
 func withProjectInstructions(base string, loaded instructions.Result) string {

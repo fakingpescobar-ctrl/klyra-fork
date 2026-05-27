@@ -9,58 +9,67 @@ import (
 )
 
 type Config struct {
-	Provider               string             `json:"provider"`
-	Model                  string             `json:"model"`
-	ModelRoutes            map[string]string  `json:"model_routes,omitempty"`
-	BaseURLs               map[string]string  `json:"base_urls,omitempty"`
-	Reasoning              string             `json:"reasoning,omitempty"`
-	Stream                 bool               `json:"stream"`
-	MaxSteps               int                `json:"max_steps"`
-	MaxMessages            int                `json:"max_messages"`
-	MaxContext             int                `json:"max_context_tokens"`
-	MaxInstructions        int                `json:"max_instruction_bytes"`
-	MaxOutput              int                `json:"max_output_tokens"`
-	ApprovalMode           string             `json:"approval_mode"`
-	Sandbox                string             `json:"sandbox"`
-	Mode                   string             `json:"mode"`
-	ContextFiles           []string           `json:"context_files,omitempty"`
-	ContextCockpit         bool               `json:"context_cockpit"`
-	ContextCockpitInject   bool               `json:"context_cockpit_inject"`
-	ContextCockpitTokens   int                `json:"context_cockpit_tokens"`
-	ContextCockpitMaxFiles int                `json:"context_cockpit_max_files"`
-	ContextCockpitDiff     bool               `json:"context_cockpit_diff"`
-	ContextRecipes         bool               `json:"context_recipes"`
-	NegativeContext        bool               `json:"negative_context"`
-	Skills                 bool               `json:"skills"`
-	StoreResponses         bool               `json:"store_responses"`
-	Profiles               map[string]Profile `json:"profiles,omitempty"`
+	Provider               string               `json:"provider"`
+	Model                  string               `json:"model"`
+	ModelRoutes            map[string]string    `json:"model_routes,omitempty"`
+	BaseURLs               map[string]string    `json:"base_urls,omitempty"`
+	Reasoning              string               `json:"reasoning,omitempty"`
+	Stream                 bool                 `json:"stream"`
+	MaxSteps               int                  `json:"max_steps"`
+	MaxMessages            int                  `json:"max_messages"`
+	MaxContext             int                  `json:"max_context_tokens"`
+	MaxInstructions        int                  `json:"max_instruction_bytes"`
+	MaxOutput              int                  `json:"max_output_tokens"`
+	ApprovalMode           string               `json:"approval_mode"`
+	Sandbox                string               `json:"sandbox"`
+	Mode                   string               `json:"mode"`
+	ContextFiles           []string             `json:"context_files,omitempty"`
+	ContextCockpit         bool                 `json:"context_cockpit"`
+	ContextCockpitInject   bool                 `json:"context_cockpit_inject"`
+	ContextCockpitTokens   int                  `json:"context_cockpit_tokens"`
+	ContextCockpitMaxFiles int                  `json:"context_cockpit_max_files"`
+	ContextCockpitDiff     bool                 `json:"context_cockpit_diff"`
+	ContextRecipes         bool                 `json:"context_recipes"`
+	NegativeContext        bool                 `json:"negative_context"`
+	Skills                 bool                 `json:"skills"`
+	MCPServers             map[string]MCPServer `json:"mcp_servers,omitempty"`
+	StoreResponses         bool                 `json:"store_responses"`
+	Profiles               map[string]Profile   `json:"profiles,omitempty"`
+}
+
+type MCPServer struct {
+	Command string            `json:"command"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	Enabled *bool             `json:"enabled,omitempty"`
 }
 
 type Profile struct {
-	Provider               string            `json:"provider,omitempty"`
-	Model                  string            `json:"model,omitempty"`
-	ModelRoutes            map[string]string `json:"model_routes,omitempty"`
-	BaseURLs               map[string]string `json:"base_urls,omitempty"`
-	Reasoning              string            `json:"reasoning,omitempty"`
-	Stream                 *bool             `json:"stream,omitempty"`
-	MaxSteps               int               `json:"max_steps,omitempty"`
-	MaxMessages            int               `json:"max_messages,omitempty"`
-	MaxContext             int               `json:"max_context_tokens,omitempty"`
-	MaxInstructions        int               `json:"max_instruction_bytes,omitempty"`
-	MaxOutput              int               `json:"max_output_tokens,omitempty"`
-	ApprovalMode           string            `json:"approval_mode,omitempty"`
-	Sandbox                string            `json:"sandbox,omitempty"`
-	Mode                   string            `json:"mode,omitempty"`
-	ContextFiles           []string          `json:"context_files,omitempty"`
-	ContextCockpit         *bool             `json:"context_cockpit,omitempty"`
-	ContextCockpitInject   *bool             `json:"context_cockpit_inject,omitempty"`
-	ContextCockpitTokens   int               `json:"context_cockpit_tokens,omitempty"`
-	ContextCockpitMaxFiles int               `json:"context_cockpit_max_files,omitempty"`
-	ContextCockpitDiff     *bool             `json:"context_cockpit_diff,omitempty"`
-	ContextRecipes         *bool             `json:"context_recipes,omitempty"`
-	NegativeContext        *bool             `json:"negative_context,omitempty"`
-	Skills                 *bool             `json:"skills,omitempty"`
-	StoreResponses         *bool             `json:"store_responses,omitempty"`
+	Provider               string               `json:"provider,omitempty"`
+	Model                  string               `json:"model,omitempty"`
+	ModelRoutes            map[string]string    `json:"model_routes,omitempty"`
+	BaseURLs               map[string]string    `json:"base_urls,omitempty"`
+	Reasoning              string               `json:"reasoning,omitempty"`
+	Stream                 *bool                `json:"stream,omitempty"`
+	MaxSteps               int                  `json:"max_steps,omitempty"`
+	MaxMessages            int                  `json:"max_messages,omitempty"`
+	MaxContext             int                  `json:"max_context_tokens,omitempty"`
+	MaxInstructions        int                  `json:"max_instruction_bytes,omitempty"`
+	MaxOutput              int                  `json:"max_output_tokens,omitempty"`
+	ApprovalMode           string               `json:"approval_mode,omitempty"`
+	Sandbox                string               `json:"sandbox,omitempty"`
+	Mode                   string               `json:"mode,omitempty"`
+	ContextFiles           []string             `json:"context_files,omitempty"`
+	ContextCockpit         *bool                `json:"context_cockpit,omitempty"`
+	ContextCockpitInject   *bool                `json:"context_cockpit_inject,omitempty"`
+	ContextCockpitTokens   int                  `json:"context_cockpit_tokens,omitempty"`
+	ContextCockpitMaxFiles int                  `json:"context_cockpit_max_files,omitempty"`
+	ContextCockpitDiff     *bool                `json:"context_cockpit_diff,omitempty"`
+	ContextRecipes         *bool                `json:"context_recipes,omitempty"`
+	NegativeContext        *bool                `json:"negative_context,omitempty"`
+	Skills                 *bool                `json:"skills,omitempty"`
+	MCPServers             map[string]MCPServer `json:"mcp_servers,omitempty"`
+	StoreResponses         *bool                `json:"store_responses,omitempty"`
 }
 
 func Default() Config {
@@ -68,6 +77,7 @@ func Default() Config {
 		Provider:               "mock",
 		Model:                  "mock-agent",
 		BaseURLs:               map[string]string{},
+		MCPServers:             map[string]MCPServer{},
 		Stream:                 true,
 		MaxSteps:               20,
 		MaxMessages:            40,
@@ -301,6 +311,14 @@ func (c Config) WithProfile(name string) (Config, error) {
 	if profile.Skills != nil {
 		c.Skills = *profile.Skills
 	}
+	if profile.MCPServers != nil {
+		if c.MCPServers == nil {
+			c.MCPServers = map[string]MCPServer{}
+		}
+		for name, server := range profile.MCPServers {
+			c.MCPServers[name] = server
+		}
+	}
 	if profile.StoreResponses != nil {
 		c.StoreResponses = *profile.StoreResponses
 	}
@@ -314,6 +332,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.BaseURLs == nil {
 		c.BaseURLs = map[string]string{}
+	}
+	if c.MCPServers == nil {
+		c.MCPServers = map[string]MCPServer{}
 	}
 	if c.Model == "" && c.Provider == "mock" {
 		c.Model = defaults.Model

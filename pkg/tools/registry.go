@@ -55,6 +55,8 @@ func NewDefaultRegistry() *Registry {
 		FileOutline{},
 		SymbolReader{},
 		GoSymbolReader{},
+		WebSearch{},
+		FetchURL{},
 		FileWriter{},
 		FileCreator{},
 		ReplaceLines{},
@@ -94,6 +96,8 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 		"read_symbol":  true,
 		"git_status":   true,
 		"policy_check": true,
+		"web_search":   true,
+		"fetch_url":    true,
 	}
 	if mentionsGo(task) {
 		names["read_go_symbol"] = true
@@ -158,6 +162,11 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 	}
 
 	specs := make([]llm.ToolSpec, 0, len(names))
+	for name := range r.tools {
+		if isMCPTool(name) {
+			names[name] = true
+		}
+	}
 	for name := range names {
 		if tool, ok := r.tools[name]; ok {
 			specs = append(specs, tool.Spec())
@@ -279,6 +288,9 @@ func enforceWriteToolUsage(cwd, mode string, call llm.ToolCall) error {
 
 func enforceSandbox(sandbox string, call llm.ToolCall) error {
 	profile := policy.NormalizeSandbox(sandbox)
+	if isMCPTool(call.Name) && profile == policy.SandboxReadOnly {
+		return fmt.Errorf("sandbox %s blocks external MCP tool %s", profile, call.Name)
+	}
 	switch call.Name {
 	case "write_file", "create_file", "diff_patch", "replace_lines", "insert_lines", "replace_symbol", "workspace_restore":
 		if profile == policy.SandboxReadOnly {
@@ -317,6 +329,13 @@ func mentionsEdit(task string) bool {
 	})
 }
 
+func mentionsWeb(task string) bool {
+	return containsAny(task, []string{
+		"http://", "https://", "web", "internet", "online", "site", "url", "latest", "current", "today", "news",
+		"интернет", "в интернете", "веб", "сайт", "ссылк", "url", "актуаль", "последн", "новост", "сегодня", "найди в сети",
+	})
+}
+
 func containsAny(text string, needles []string) bool {
 	for _, needle := range needles {
 		if strings.Contains(text, needle) {
@@ -327,10 +346,17 @@ func containsAny(text string, needles []string) bool {
 }
 
 func RequiresApproval(name string) bool {
+	if isMCPTool(name) {
+		return true
+	}
 	switch name {
 	case "bash", "write_file", "create_file", "diff_patch", "replace_lines", "insert_lines", "replace_symbol", "workspace_restore":
 		return true
 	default:
 		return false
 	}
+}
+
+func isMCPTool(name string) bool {
+	return strings.HasPrefix(name, "mcp_")
 }

@@ -23,6 +23,18 @@ func TestGitStatusReturnsCompactStatus(t *testing.T) {
 	}
 }
 
+func TestGitStatusReturnsCleanMessage(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	result, err := GitStatus{}.Run(context.Background(), Invocation{CWD: dir, Args: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "clean working tree" {
+		t.Fatalf("unexpected status:\n%s", result.Output)
+	}
+}
+
 func TestGitStatusOutsideRepositoryIsNonFatal(t *testing.T) {
 	result, err := GitStatus{}.Run(context.Background(), Invocation{CWD: t.TempDir(), Args: map[string]any{}})
 	if err != nil {

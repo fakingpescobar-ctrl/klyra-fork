@@ -92,6 +92,88 @@ func TestDiffPreviewChecksPatchWithoutApplying(t *testing.T) {
 	}
 }
 
+func TestDiffPreviewFallsBackWhenGitApplyRejectsLooseHunkCounts(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	runGit(t, dir, "config", "user.email", "test@example.com")
+	runGit(t, dir, "config", "user.name", "Test User")
+
+	path := filepath.Join(dir, "hello.txt")
+	if err := os.WriteFile(path, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", "hello.txt")
+	runGit(t, dir, "commit", "-m", "initial")
+
+	patch := strings.Join([]string{
+		"--- a/hello.txt",
+		"+++ b/hello.txt",
+		"@@ -1,999 +1,999 @@",
+		"-hello",
+		"+hello fallback",
+		"",
+	}, "\n")
+
+	result, err := DiffPreview{}.Run(context.Background(), Invocation{
+		CWD:  dir,
+		Args: map[string]any{"patch": patch},
+	})
+	if err != nil {
+		t.Fatalf("preview fallback failed: %v (%s)", err, result.Output)
+	}
+	if !strings.Contains(result.Output, "without git apply") {
+		t.Fatalf("expected fallback output, got %q", result.Output)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello\n" {
+		t.Fatalf("preview should not apply patch, got %q", data)
+	}
+}
+
+func TestDiffPatcherFallsBackWhenGitApplyRejectsLooseHunkCounts(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	runGit(t, dir, "config", "user.email", "test@example.com")
+	runGit(t, dir, "config", "user.name", "Test User")
+
+	path := filepath.Join(dir, "hello.txt")
+	if err := os.WriteFile(path, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", "hello.txt")
+	runGit(t, dir, "commit", "-m", "initial")
+
+	patch := strings.Join([]string{
+		"--- a/hello.txt",
+		"+++ b/hello.txt",
+		"@@ -1,999 +1,999 @@",
+		"-hello",
+		"+hello fallback",
+		"",
+	}, "\n")
+
+	result, err := DiffPatcher{}.Run(context.Background(), Invocation{
+		CWD:  dir,
+		Args: map[string]any{"patch": patch},
+	})
+	if err != nil {
+		t.Fatalf("patch fallback failed: %v (%s)", err, result.Output)
+	}
+	if !strings.Contains(result.Output, "without git apply") {
+		t.Fatalf("expected fallback output, got %q", result.Output)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello fallback\n" {
+		t.Fatalf("unexpected file content: %q", data)
+	}
+}
+
 func TestDiffPatcherAppliesUnifiedDiffWithoutGit(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hello.txt")

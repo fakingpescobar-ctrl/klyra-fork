@@ -92,6 +92,24 @@ func TestWithProfileAppliesContextCockpitOverrides(t *testing.T) {
 	}
 }
 
+func TestWithProfileMergesMCPServers(t *testing.T) {
+	cfg := Default()
+	disabled := false
+	cfg.MCPServers["base"] = MCPServer{Command: "base-cmd"}
+	cfg.Profiles["mcp"] = Profile{
+		MCPServers: map[string]MCPServer{
+			"demo": {Command: "demo-cmd", Args: []string{"--stdio"}, Enabled: &disabled},
+		},
+	}
+	got, err := cfg.WithProfile("mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MCPServers["base"].Command != "base-cmd" || got.MCPServers["demo"].Command != "demo-cmd" || got.MCPServers["demo"].Enabled == nil {
+		t.Fatalf("expected merged mcp servers: %+v", got.MCPServers)
+	}
+}
+
 func TestWriteDefault(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	written, err := WriteDefault(path)

@@ -25,6 +25,9 @@ func (GitStatus) Run(ctx context.Context, inv Invocation) (Result, error) {
 	if err != nil && isNotGitRepository(result.Output) {
 		return Result{Output: "not a git repository"}, nil
 	}
+	if err == nil && strings.TrimSpace(result.Output) == "" {
+		return Result{Output: "clean working tree"}, nil
+	}
 	return result, err
 }
 

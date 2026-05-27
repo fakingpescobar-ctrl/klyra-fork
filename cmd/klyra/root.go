@@ -137,6 +137,10 @@ func newRootCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			toolRegistry, err := buildToolRegistry(context.Background(), runtimeCfg)
+			if err != nil {
+				return err
+			}
 			runner, err := agent.New(agent.Config{
 				CWD:                    opts.cwd,
 				Model:                  model,
@@ -162,6 +166,7 @@ func newRootCommand() *cobra.Command {
 				NegativeContext:        runtimeCfg.NegativeContext,
 				Skills:                 runtimeCfg.Skills,
 				Provider:               provider,
+				Tools:                  toolRegistry,
 				Input:                  os.Stdin,
 				Output:                 cmd.OutOrStdout(),
 			})
@@ -199,7 +204,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newCheckpointCommand(&opts))
 	root.AddCommand(newDiffCommand(&opts))
 	root.AddCommand(newPolicyCommand())
-	root.AddCommand(newToolsCommand())
+	root.AddCommand(newToolsCommand(&opts))
 	root.AddCommand(newInstructionsCommand(&opts))
 	root.AddCommand(newSkillsCommand(&opts))
 	root.AddCommand(newDoctorCommand(&opts))
@@ -223,6 +228,122 @@ func newTUIApprover(p **tea.Program) agent.ApprovalFunc {
 		})
 		return <-reply, nil
 	}
+}
+
+type tuiStreamDispatcher struct {
+	program func() *tea.Program
+	done    chan struct{}
+	stopped chan struct{}
+	once    sync.Once
+
+	mu           sync.Mutex
+	text         strings.Builder
+	reasoning    strings.Builder
+	toolStreams  []tui.ToolStreamMsg
+	toolProgress []tui.ToolProgressMsg
+}
+
+func newTUIStreamDispatcher(program func() *tea.Program) *tuiStreamDispatcher {
+	dispatcher := &tuiStreamDispatcher{
+		program: program,
+		done:    make(chan struct{}),
+		stopped: make(chan struct{}),
+	}
+	go dispatcher.run()
+	return dispatcher
+}
+
+func (d *tuiStreamDispatcher) SendText(text string) {
+	if text == "" {
+		return
+	}
+	d.mu.Lock()
+	d.text.WriteString(text)
+	d.mu.Unlock()
+}
+
+func (d *tuiStreamDispatcher) SendReasoning(text string) {
+	if text == "" {
+		return
+	}
+	d.mu.Lock()
+	d.reasoning.WriteString(text)
+	d.mu.Unlock()
+}
+
+func (d *tuiStreamDispatcher) SendToolStream(msg tui.ToolStreamMsg) {
+	d.mu.Lock()
+	d.toolStreams = append(d.toolStreams, msg)
+	d.mu.Unlock()
+}
+
+func (d *tuiStreamDispatcher) SendToolProgress(msg tui.ToolProgressMsg) {
+	d.mu.Lock()
+	d.toolProgress = append(d.toolProgress, msg)
+	d.mu.Unlock()
+}
+
+func (d *tuiStreamDispatcher) Close() {
+	d.once.Do(func() { close(d.done) })
+	select {
+	case <-d.stopped:
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+func (d *tuiStreamDispatcher) run() {
+	ticker := time.NewTicker(33 * time.Millisecond)
+	defer ticker.Stop()
+	defer close(d.stopped)
+	for {
+		select {
+		case <-ticker.C:
+			d.flush()
+		case <-d.done:
+			d.flush()
+			return
+		}
+	}
+}
+
+func (d *tuiStreamDispatcher) flush() {
+	text, reasoning, toolStreams, toolProgress := d.drain()
+	if text == "" && reasoning == "" && len(toolStreams) == 0 && len(toolProgress) == 0 {
+		return
+	}
+	if d.program == nil {
+		return
+	}
+	program := d.program()
+	if program == nil {
+		return
+	}
+	if reasoning != "" {
+		program.Send(tui.ReasoningMsg(reasoning))
+	}
+	if text != "" {
+		program.Send(tui.StreamMsg(text))
+	}
+	for _, msg := range toolStreams {
+		program.Send(msg)
+	}
+	for _, msg := range toolProgress {
+		program.Send(msg)
+	}
+}
+
+func (d *tuiStreamDispatcher) drain() (string, string, []tui.ToolStreamMsg, []tui.ToolProgressMsg) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	text := d.text.String()
+	reasoning := d.reasoning.String()
+	toolStreams := append([]tui.ToolStreamMsg(nil), d.toolStreams...)
+	toolProgress := append([]tui.ToolProgressMsg(nil), d.toolProgress...)
+	d.text.Reset()
+	d.reasoning.Reset()
+	d.toolStreams = nil
+	d.toolProgress = nil
+	return text, reasoning, toolStreams, toolProgress
 }
 
 func newTUICommand(opts *options) *cobra.Command {
@@ -456,8 +577,13 @@ func newTUICommand(opts *options) *cobra.Command {
 				if err != nil {
 					return "", err
 				}
+				toolRegistry, err := buildToolRegistry(context.Background(), runtimeCfg)
+				if err != nil {
+					return "", err
+				}
 				var output strings.Builder
 				sawStream := false
+				streamDispatcher := newTUIStreamDispatcher(func() *tea.Program { return p })
 				runnerWithOutput, err := agent.New(agent.Config{
 					CWD:                    opts.cwd,
 					Model:                  model,
@@ -483,6 +609,7 @@ func newTUICommand(opts *options) *cobra.Command {
 					NegativeContext:        runtimeCfg.NegativeContext,
 					Skills:                 runtimeCfg.Skills,
 					Provider:               provider,
+					Tools:                  toolRegistry,
 					Input:                  os.Stdin,
 					Output:                 &output,
 					Approver:               newTUIApprover(&p),
@@ -492,7 +619,7 @@ func newTUICommand(opts *options) *cobra.Command {
 						}
 						if event.ToolName != "" || event.ToolArgumentsDelta != "" {
 							sawStream = true
-							p.Send(tui.ToolStreamMsg{
+							streamDispatcher.SendToolStream(tui.ToolStreamMsg{
 								Index:     event.ToolCallIndex,
 								ID:        event.ToolCallID,
 								Name:      event.ToolName,
@@ -501,7 +628,7 @@ func newTUICommand(opts *options) *cobra.Command {
 						}
 						if event.Delta != "" {
 							sawStream = true
-							p.Send(tui.StreamMsg(event.Delta))
+							streamDispatcher.SendText(event.Delta)
 						}
 						return nil
 					},
@@ -509,7 +636,7 @@ func newTUICommand(opts *options) *cobra.Command {
 						if text == "" || p == nil {
 							return nil
 						}
-						p.Send(tui.ReasoningMsg(text))
+						streamDispatcher.SendReasoning(text)
 						return nil
 					},
 					ToolProgress: func(event agent.ToolProgressEvent) error {
@@ -517,7 +644,7 @@ func newTUICommand(opts *options) *cobra.Command {
 							return nil
 						}
 						sawStream = true
-						p.Send(tui.ToolProgressMsg{
+						streamDispatcher.SendToolProgress(tui.ToolProgressMsg{
 							Phase:  event.Phase,
 							Tool:   event.Tool,
 							ID:     event.ID,
@@ -529,6 +656,7 @@ func newTUICommand(opts *options) *cobra.Command {
 					},
 				})
 				if err != nil {
+					streamDispatcher.Close()
 					return "", err
 				}
 				attachments := pendingAttachments
@@ -549,6 +677,7 @@ func newTUICommand(opts *options) *cobra.Command {
 
 				startTime := time.Now()
 				result, err := runnerWithOutput.RunConversationWithAttachments(runCtx, saved.Messages, input, attachments)
+				streamDispatcher.Close()
 				elapsed := time.Since(startTime)
 
 				// Attach duration and usage to the last assistant message in result.Messages
@@ -811,6 +940,7 @@ func formatTUISettings(cfg appconfig.Config, attachments []llm.Attachment) strin
 	fmt.Fprintf(&builder, "- context recipes: `%s`\n", onOff(cfg.ContextRecipes))
 	fmt.Fprintf(&builder, "- negative context: `%s`\n", onOff(cfg.NegativeContext))
 	fmt.Fprintf(&builder, "- skills: `%s`\n", onOff(cfg.Skills))
+	fmt.Fprintf(&builder, "- mcp servers: `%d`\n", len(configuredMCPServers(cfg)))
 	fmt.Fprintf(&builder, "- fast model: `%s`\n", valueOrString(cfg.ModelRoutes["fast"], "default"))
 	fmt.Fprintf(&builder, "- edit model: `%s`\n", valueOrString(cfg.ModelRoutes["edit"], "default"))
 	fmt.Fprintf(&builder, "- deep model: `%s`\n", valueOrString(cfg.ModelRoutes["deep"], "default"))
@@ -1368,6 +1498,10 @@ func newChatCommand(opts *options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			toolRegistry, err := buildToolRegistry(context.Background(), runtimeCfg)
+			if err != nil {
+				return err
+			}
 			store, err := session.NewStore(opts.cwd)
 			if err != nil {
 				return err
@@ -1401,6 +1535,7 @@ func newChatCommand(opts *options) *cobra.Command {
 				NegativeContext:        runtimeCfg.NegativeContext,
 				Skills:                 runtimeCfg.Skills,
 				Provider:               provider,
+				Tools:                  toolRegistry,
 				Input:                  os.Stdin,
 				Output:                 cmd.OutOrStdout(),
 			})
@@ -1466,12 +1601,20 @@ func newChatCommand(opts *options) *cobra.Command {
 	}
 }
 
-func newToolsCommand() *cobra.Command {
+func newToolsCommand(opts *options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "tools",
-		Short: "List built-in tools available to the agent",
+		Short: "List tools available to the agent",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			specs := tools.NewDefaultRegistry().Specs()
+			runtimeCfg, err := effectiveConfig(cmd, *opts)
+			if err != nil {
+				return err
+			}
+			registry, err := buildToolRegistry(context.Background(), runtimeCfg)
+			if err != nil {
+				return err
+			}
+			specs := registry.Specs()
 			sort.Slice(specs, func(i, j int) bool { return specs[i].Name < specs[j].Name })
 			for _, spec := range specs {
 				fmt.Fprintf(cmd.OutOrStdout(), "%-16s %s\n", spec.Name, spec.Description)
@@ -1955,6 +2098,43 @@ func providerBaseURL(cfg appconfig.Config, provider string) string {
 		return ""
 	}
 	return cfg.BaseURLs[strings.ToLower(strings.TrimSpace(provider))]
+}
+
+func buildToolRegistry(ctx context.Context, cfg appconfig.Config) (*tools.Registry, error) {
+	registry := tools.NewDefaultRegistry()
+	servers := configuredMCPServers(cfg)
+	if len(servers) == 0 {
+		return registry, nil
+	}
+	if err := tools.RegisterMCPServers(ctx, registry, servers); err != nil {
+		return nil, err
+	}
+	return registry, nil
+}
+
+func configuredMCPServers(cfg appconfig.Config) []tools.MCPServerConfig {
+	names := make([]string, 0, len(cfg.MCPServers))
+	for name := range cfg.MCPServers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	servers := make([]tools.MCPServerConfig, 0, len(names))
+	for _, name := range names {
+		server := cfg.MCPServers[name]
+		if server.Enabled != nil && !*server.Enabled {
+			continue
+		}
+		if strings.TrimSpace(server.Command) == "" {
+			continue
+		}
+		servers = append(servers, tools.MCPServerConfig{
+			Name:    name,
+			Command: server.Command,
+			Args:    append([]string(nil), server.Args...),
+			Env:     server.Env,
+		})
+	}
+	return servers
 }
 
 func setProviderBaseURL(cfg *appconfig.Config, provider, baseURL string) {

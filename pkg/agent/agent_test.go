@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -48,6 +49,73 @@ func TestAgentRunExecutesToolAndReturnsFinal(t *testing.T) {
 	}
 	if !hasToolMessage(provider.requests[1].Messages) {
 		t.Fatalf("expected second request to include tool observation")
+	}
+}
+
+func TestAgentSuppressesRepeatedFailedToolCall(t *testing.T) {
+	call := llm.ToolCall{
+		ID:        "call-1",
+		Name:      "always_fail",
+		Arguments: map[string]any{"path": "missing.txt"},
+	}
+	provider := &scriptedProvider{
+		responses: []llm.Response{
+			{Content: "try", ToolCalls: []llm.ToolCall{call}},
+			{Content: "retry", ToolCalls: []llm.ToolCall{{
+				ID:        "call-2",
+				Name:      call.Name,
+				Arguments: call.Arguments,
+			}}},
+			{Content: "done"},
+		},
+	}
+	failing := &failingTool{name: "always_fail"}
+	agent, err := New(Config{
+		CWD:      t.TempDir(),
+		Provider: provider,
+		Tools:    tools.NewRegistry(failing),
+		Output:   io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := agent.RunConversation(context.Background(), nil, "fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Final != "done" {
+		t.Fatalf("unexpected final response: %q", result.Final)
+	}
+	if failing.calls != 1 {
+		t.Fatalf("expected failed tool to run once, ran %d times", failing.calls)
+	}
+	var suppressed bool
+	for _, msg := range result.Messages {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "repeated failed tool call suppressed") {
+			suppressed = true
+		}
+	}
+	if !suppressed {
+		t.Fatalf("expected suppression observation in messages: %+v", result.Messages)
+	}
+}
+
+func TestDefaultSystemMessageTellsModelToChangeStrategyAfterToolFailure(t *testing.T) {
+	system := defaultSystemMessage()
+	if !strings.Contains(system, "do not repeat the same failed call") || !strings.Contains(system, "create_file and include a short description") {
+		t.Fatalf("system prompt does not guide failed tool recovery: %s", system)
+	}
+}
+
+func TestToolObservationAddsRecoveryGuidance(t *testing.T) {
+	observation := toolObservation(
+		llm.ToolCall{Name: "diff_preview", Arguments: map[string]any{"patch": "bad"}},
+		tools.Result{Output: "git apply output"},
+		fmt.Errorf("exit status 128"),
+	)
+	if !strings.Contains(observation, "next_action") || !strings.Contains(observation, "replace_lines") {
+		t.Fatalf("expected recovery guidance in observation: %s", observation)
 	}
 }
 
@@ -599,6 +667,24 @@ type streamedProvider struct {
 	response  llm.Response
 	deltas    []string
 	reasoning []string
+}
+
+type failingTool struct {
+	name  string
+	calls int
+}
+
+func (t *failingTool) Spec() llm.ToolSpec {
+	return llm.ToolSpec{
+		Name:        t.name,
+		Description: "Always fails for tests.",
+		Parameters:  map[string]any{"type": "object"},
+	}
+}
+
+func (t *failingTool) Run(context.Context, tools.Invocation) (tools.Result, error) {
+	t.calls++
+	return tools.Result{Output: "synthetic failure"}, fmt.Errorf("synthetic failure")
 }
 
 func (p *streamedProvider) Complete(_ context.Context, _ llm.Request) (llm.Response, error) {
