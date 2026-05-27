@@ -82,3 +82,10 @@ func TestSkillsCommandShowsMatchedSkill(t *testing.T) {
 		t.Fatalf("skills output missing matched skill:\n%s", out.String())
 	}
 }
+
+func TestTerminalTitleForProject(t *testing.T) {
+	title := terminalTitleForProject(filepath.Join(t.TempDir(), "demo-project"))
+	if title != "Klyra: demo-project" {
+		t.Fatalf("unexpected title: %q", title)
+	}
+}

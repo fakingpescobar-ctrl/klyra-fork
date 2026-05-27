@@ -95,6 +95,9 @@ func newRootCommand() *cobra.Command {
 		Use:     "klyra",
 		Short:   "Agentic coding CLI",
 		Version: version.Version,
+		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+			setTerminalTitle(cmd.ErrOrStderr(), terminalTitleForProject(opts.cwd))
+		},
 	}
 
 	root.PersistentFlags().StringVar(&opts.cwd, "cwd", ".", "workspace directory")
@@ -2266,6 +2269,38 @@ func setProviderBaseURL(cfg *appconfig.Config, provider, baseURL string) {
 		return
 	}
 	cfg.BaseURLs[provider] = baseURL
+}
+
+func terminalTitleForProject(cwd string) string {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		cwd = "."
+	}
+	abs, err := filepath.Abs(cwd)
+	if err == nil {
+		cwd = abs
+	}
+	project := filepath.Base(filepath.Clean(cwd))
+	if project == "." || project == string(filepath.Separator) || strings.TrimSpace(project) == "" {
+		project = "workspace"
+	}
+	return "Klyra: " + project
+}
+
+func setTerminalTitle(out io.Writer, title string) {
+	if strings.TrimSpace(title) == "" || os.Getenv("TERM") == "dumb" {
+		return
+	}
+	file, ok := out.(*os.File)
+	if !ok {
+		return
+	}
+	info, err := file.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		return
+	}
+	title = strings.NewReplacer("\x1b", "", "\x07", "", "\n", " ", "\r", " ").Replace(title)
+	fmt.Fprintf(file, "\x1b]0;%s\x07", title)
 }
 
 func loadEnvFile(dir string) {
