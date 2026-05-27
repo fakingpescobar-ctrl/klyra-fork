@@ -340,3 +340,59 @@ func TestModelReasoningThoughts(t *testing.T) {
 		t.Fatal("expected reasoning expanded state to be reset on Enter")
 	}
 }
+
+func TestModelHistoryNavigation(t *testing.T) {
+	model := New(Config{
+		Handler: func(input string) (string, error) {
+			return "ok", nil
+		},
+	})
+
+	// 1. Submit two commands to populate history
+	model.input.SetValue("first command")
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg := executeCmd(cmd)
+	updated, _ = updated.(Model).Update(msg)
+	m := updated.(Model)
+
+	m.input.SetValue("second command")
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg = executeCmd(cmd)
+	updated, _ = updated.(Model).Update(msg)
+	m = updated.(Model)
+
+	// 2. Pressing regular "up" should NOT change the input value (should scroll viewport)
+	m.input.SetValue("current typing")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m2 := updated.(Model)
+	if m2.input.Value() != "current typing" {
+		t.Fatalf("expected regular Up arrow to not alter input value, got %q", m2.input.Value())
+	}
+
+	// 3. Pressing "ctrl+p" should retrieve "second command"
+	m.input.SetValue("current typing")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	m = updated.(Model)
+	if m.input.Value() != "second command" {
+		t.Fatalf("expected Ctrl+P to retrieve 'second command', got %q", m.input.Value())
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	m = updated.(Model)
+	if m.input.Value() != "first command" {
+		t.Fatalf("expected second Ctrl+P to retrieve 'first command', got %q", m.input.Value())
+	}
+
+	// Navigate forward in history
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = updated.(Model)
+	if m.input.Value() != "second command" {
+		t.Fatalf("expected Ctrl+N to retrieve 'second command', got %q", m.input.Value())
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = updated.(Model)
+	if m.input.Value() != "current typing" {
+		t.Fatalf("expected second Ctrl+N to retrieve temp input 'current typing', got %q", m.input.Value())
+	}
+}
