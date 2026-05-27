@@ -166,3 +166,40 @@ func TestResponsesProviderStreamsDeltasAndFinalResponse(t *testing.T) {
 		t.Fatalf("unexpected final response: %+v", resp)
 	}
 }
+
+func TestResponsesProviderStreamsReasoningSummaryDeltas(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.reasoning_summary_text.delta\n")
+		fmt.Fprint(w, `data: {"type":"response.reasoning_summary_text.delta","delta":"checking"}`+"\n\n")
+		fmt.Fprint(w, "event: response.output_text.delta\n")
+		fmt.Fprint(w, `data: {"type":"response.output_text.delta","delta":"ok"}`+"\n\n")
+		fmt.Fprint(w, "event: response.completed\n")
+		fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"resp_stream","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	provider, err := NewResponsesProvider("test-key", server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deltas strings.Builder
+	var reasoning strings.Builder
+	_, err = provider.Stream(context.Background(), Request{
+		Model:    "gpt-test",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	}, func(event StreamEvent) error {
+		deltas.WriteString(event.Delta)
+		reasoning.WriteString(event.Reasoning)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deltas.String() != "ok" {
+		t.Fatalf("unexpected output deltas: %q", deltas.String())
+	}
+	if reasoning.String() != "checking" {
+		t.Fatalf("unexpected reasoning deltas: %q", reasoning.String())
+	}
+}

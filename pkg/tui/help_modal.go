@@ -25,13 +25,13 @@ type HelpModal struct {
 
 func NewHelpModal(commands []CommandDef) HelpModal {
 	catMap := map[string][]CommandDef{
-		"Session":     {},
-		"Settings":    {},
-		"Safety":      {},
-		"Context":     {},
-		"Tools":       {},
-		"Workspace":   {},
-		"Other":       {},
+		"Session":   {},
+		"Settings":  {},
+		"Safety":    {},
+		"Context":   {},
+		"Tools":     {},
+		"Workspace": {},
+		"Other":     {},
 	}
 	catOrder := []string{"Session", "Settings", "Safety", "Context", "Tools", "Workspace", "Other"}
 
@@ -176,8 +176,11 @@ func (h HelpModal) View(termWidth, termHeight int) string {
 	content := strings.Join(visibleLines, "\n")
 
 	boxWidth := 64
-	if termWidth > 0 && boxWidth > termWidth-4 {
-		boxWidth = termWidth - 4
+	if termWidth > 0 && boxWidth > termWidth-8 {
+		boxWidth = termWidth - 8
+	}
+	if boxWidth < 36 {
+		boxWidth = max(24, termWidth-4)
 	}
 
 	box := lipgloss.NewStyle().

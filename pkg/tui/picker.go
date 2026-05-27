@@ -20,12 +20,12 @@ type PickerOption struct {
 
 // PickerModal is a reusable modal for choosing one value from a list.
 type PickerModal struct {
-	Title    string
-	Options  []PickerOption
-	Cursor   int
-	Current  string // currently active value (shown with ●)
-	Width    int
-	Field    string // setting field name for the callback, e.g. "approval"
+	Title   string
+	Options []PickerOption
+	Cursor  int
+	Current string // currently active value (shown with ●)
+	Width   int
+	Field   string // setting field name for the callback, e.g. "approval"
 }
 
 // NewPicker creates a PickerModal pre-selecting the current value.
@@ -135,14 +135,21 @@ func (p PickerModal) View(termWidth int) string {
 			hintKeyStyle.Render("Enter")+hintTextStyle.Render(" select  ")+
 			hintKeyStyle.Render("Esc")+hintTextStyle.Render(" cancel"))
 
-	content := strings.Join(lines, "\n")
-
 	boxWidth := p.Width
 	if boxWidth <= 0 {
 		boxWidth = 48
 	}
 	if termWidth > 0 && boxWidth > termWidth-4 {
 		boxWidth = termWidth - 4
+	}
+	if boxWidth < 32 {
+		boxWidth = max(20, termWidth-4)
+	}
+	contentWidth := max(20, boxWidth-6)
+
+	var fitted []string
+	for _, line := range lines {
+		fitted = append(fitted, lipgloss.NewStyle().MaxWidth(contentWidth).Render(line))
 	}
 
 	box := lipgloss.NewStyle().
@@ -151,7 +158,7 @@ func (p PickerModal) View(termWidth int) string {
 		Foreground(colorText).
 		Padding(1, 2).
 		Width(boxWidth).
-		Render(content)
+		Render(strings.Join(fitted, "\n"))
 
 	// Center horizontally
 	if termWidth > 0 {
@@ -211,5 +218,55 @@ func ReasoningPicker(current string) PickerModal {
 		{Value: "low", Label: "Low", Description: "quick reasoning"},
 		{Value: "medium", Label: "Medium", Description: "balanced"},
 		{Value: "high", Label: "High", Description: "deepest thinking"},
+		{Value: "xhigh", Label: "XHigh", Description: "maximum reasoning budget"},
 	})
+}
+
+func SessionPicker(current string, options []PickerOption) PickerModal {
+	picker := NewPicker("Saved Sessions", "session", current, options)
+	picker.Width = 72
+	return picker
+}
+
+func CheckpointPicker() PickerModal {
+	picker := NewPicker("Workspace Checkpoints", "checkpoint", "", []PickerOption{
+		{Value: "list", Label: "List", Description: "show available checkpoints"},
+		{Value: "create", Label: "Create", Description: "save a restore point now"},
+		{Value: "restore", Label: "Restore", Description: "choose checkpoint to restore"},
+	})
+	picker.Width = 64
+	return picker
+}
+
+func CheckpointRestorePicker(options []PickerOption) PickerModal {
+	picker := NewPicker("Restore Checkpoint", "checkpoint_restore", "", options)
+	picker.Width = 72
+	return picker
+}
+
+func ConfigPicker() PickerModal {
+	picker := NewPicker("Config", "config", "", []PickerOption{
+		{Value: "show", Label: "Show", Description: "print effective configuration"},
+		{Value: "init", Label: "Init", Description: "write default config file"},
+	})
+	picker.Width = 64
+	return picker
+}
+
+func InstructionsPicker() PickerModal {
+	picker := NewPicker("Project Instructions", "instructions", "", []PickerOption{
+		{Value: "", Label: "List", Description: "show loaded instruction files"},
+		{Value: "--content", Label: "Content", Description: "show loaded instruction text"},
+	})
+	picker.Width = 68
+	return picker
+}
+
+func DiffPicker() PickerModal {
+	picker := NewPicker("Diff", "diff", "", []PickerOption{
+		{Value: "preview", Label: "Preview", Description: "validate patch from stdin/file"},
+		{Value: "apply --yes", Label: "Apply", Description: "apply patch from stdin/file"},
+	})
+	picker.Width = 68
+	return picker
 }

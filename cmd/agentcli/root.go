@@ -170,23 +170,6 @@ func newRootCommand() *cobra.Command {
 	return root
 }
 
-type programWriter struct {
-	p **tea.Program
-}
-
-func (pw *programWriter) Write(b []byte) (n int, err error) {
-	if pw.p != nil && *pw.p != nil {
-		str := string(b)
-		// Check if it is a reasoning trace or normal assistant output
-		if strings.HasPrefix(str, "reasoning: ") {
-			(*pw.p).Send(tui.ReasoningMsg(strings.TrimPrefix(str, "reasoning: ")))
-		} else {
-			(*pw.p).Send(tui.StreamMsg(str))
-		}
-	}
-	return len(b), nil
-}
-
 func newTUIApprover(p **tea.Program) agent.ApprovalFunc {
 	return func(req agent.ApprovalRequest) (bool, error) {
 		if p == nil || *p == nil {
@@ -230,7 +213,7 @@ func newTUICommand(opts *options) *cobra.Command {
 				{Name: "/provider", Description: "Set provider: mock/openai/chat/ollama/anthropic/gemini"},
 				{Name: "/model", Description: "Set the active model name"},
 				{Name: "/endpoint", Description: "Set provider endpoint base URL"},
-				{Name: "/reasoning", Description: "Set reasoning effort: minimal/low/medium/high"},
+				{Name: "/reasoning", Description: "Set reasoning effort: minimal/low/medium/high/xhigh"},
 				{Name: "/limits", Description: "Set token/step budgets"},
 				{Name: "/approval", Description: "Set approval mode: auto/ask/never"},
 				{Name: "/sandbox", Description: "Set sandbox: read-only/workspace-write/danger-full-access"},
@@ -242,21 +225,24 @@ func newTUICommand(opts *options) *cobra.Command {
 				{Name: "/tools", Description: "List available agent tools"},
 				{Name: "/instructions", Description: "Show project instruction files"},
 				{Name: "/sessions", Description: "List saved workspace sessions"},
+				{Name: "/checkpoint", Description: "Open checkpoint actions"},
 				{Name: "/checkpoint list", Description: "List workspace checkpoints"},
 				{Name: "/checkpoint create", Description: "Create a workspace checkpoint"},
 				{Name: "/checkpoint restore", Description: "Restore files from a checkpoint"},
+				{Name: "/diff", Description: "Open diff actions"},
 				{Name: "/diff preview", Description: "Preview a patch file"},
 				{Name: "/diff apply", Description: "Apply a patch file (requires --yes)"},
 				{Name: "/policy check", Description: "Classify a shell command by risk"},
+				{Name: "/config", Description: "Open config actions"},
 				{Name: "/config show", Description: "Print effective configuration"},
 				{Name: "/config init", Description: "Write default config file"},
 				{Name: "/save", Description: "Manually save the session state"},
+				{Name: "/session", Description: "Switch to a saved session by id"},
 				{Name: "/exit", Description: "Exit the TUI"},
 				{Name: "/quit", Description: "Exit the TUI (alias)"},
 			}
 
 			var p *tea.Program
-			pw := &programWriter{p: &p}
 			pendingAttachments := []llm.Attachment{}
 
 			handler := func(input string) (string, error) {
@@ -280,6 +266,24 @@ func newTUICommand(opts *options) *cobra.Command {
 							return "", err
 						}
 						return fmt.Sprintf("### Session Saved\n\n- ID: `%s`", saved.ID), nil
+					case "/session":
+						if len(args) < 2 {
+							return "usage: /session <id>", nil
+						}
+						next, err := store.Load(args[1])
+						if err != nil {
+							return "", err
+						}
+						saved = next
+						opts.sessionID = saved.ID
+						if p != nil {
+							p.Send(tui.SessionLoadedMsg{
+								SessionID: saved.ID,
+								Lines:     tuiLinesFromMessages(saved.Messages),
+							})
+						}
+						return fmt.Sprintf("### Session Switched\n\n- ID: `%s`\n- Messages: `%d`\n- Updated: `%s`",
+							saved.ID, len(saved.Messages), saved.UpdatedAt.Format("2006-01-02 15:04:05")), nil
 					case "/compact":
 						compacted, stats := contextmgr.CompactMessages(saved.Messages, runtimeCfg.MaxContext, runtimeCfg.MaxMessages/2)
 						saved.Messages = compacted
@@ -296,7 +300,7 @@ func newTUICommand(opts *options) *cobra.Command {
 							return "", err
 						}
 						_ = runtimeCfg.Save(opts.configPath)
-						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+						return formatSettingSaved("settings", fmt.Sprintf("%d value(s)", len(args)-1)), nil
 					case "/provider":
 						if len(args) < 2 {
 							return "usage: /provider mock|openai|chat|ollama|anthropic|gemini", nil
@@ -307,28 +311,28 @@ func newTUICommand(opts *options) *cobra.Command {
 							runtimeCfg.Model = "mock-agent"
 						}
 						_ = runtimeCfg.Save(opts.configPath)
-						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+						return formatSettingSaved("provider", runtimeCfg.Provider), nil
 					case "/model":
 						if len(args) < 2 {
 							return "usage: /model <model-name>", nil
 						}
 						runtimeCfg.Model = strings.Join(args[1:], " ")
 						_ = runtimeCfg.Save(opts.configPath)
-						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+						return formatSettingSaved("model", runtimeCfg.Model), nil
 					case "/endpoint":
 						if len(args) < 2 {
 							return "usage: /endpoint <base-url>", nil
 						}
 						setProviderBaseURL(&runtimeCfg, runtimeCfg.Provider, strings.Join(args[1:], " "))
 						_ = runtimeCfg.Save(opts.configPath)
-						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+						return formatSettingSaved("endpoint", providerBaseURL(runtimeCfg, runtimeCfg.Provider)), nil
 					case "/reasoning":
 						if len(args) < 2 {
-							return "usage: /reasoning minimal|low|medium|high", nil
+							return "usage: /reasoning minimal|low|medium|high|xhigh", nil
 						}
 						runtimeCfg.Reasoning = args[1]
 						_ = runtimeCfg.Save(opts.configPath)
-						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+						return formatSettingSaved("reasoning", runtimeCfg.Reasoning), nil
 					case "/limits":
 						if len(args) == 1 {
 							return "### Limits Usage\n\n`Format:` `/limits [context|output|steps|messages|instructions] <value>`\n\n*Example:* `/limits context 32000`", nil
@@ -337,28 +341,28 @@ func newTUICommand(opts *options) *cobra.Command {
 							return "", err
 						}
 						_ = runtimeCfg.Save(opts.configPath)
-						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+						return formatSettingSaved("limit "+args[1], args[2]), nil
 					case "/approval":
 						if len(args) < 2 {
 							return "usage: /approval auto|ask|never", nil
 						}
 						runtimeCfg.ApprovalMode = args[1]
 						_ = runtimeCfg.Save(opts.configPath)
-						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+						return formatSettingSaved("approval", runtimeCfg.ApprovalMode), nil
 					case "/sandbox":
 						if len(args) < 2 {
 							return "usage: /sandbox read-only|workspace-write|danger-full-access", nil
 						}
 						runtimeCfg.Sandbox = args[1]
 						_ = runtimeCfg.Save(opts.configPath)
-						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+						return formatSettingSaved("sandbox", runtimeCfg.Sandbox), nil
 					case "/mode":
 						if len(args) < 2 {
 							return "usage: /mode inspect|edit|repair|refactor", nil
 						}
 						runtimeCfg.Mode = args[1]
 						_ = runtimeCfg.Save(opts.configPath)
-						return formatTUISettings(runtimeCfg, pendingAttachments), nil
+						return formatSettingSaved("mode", runtimeCfg.Mode), nil
 					case "/cart":
 						if len(args) >= 3 && args[1] == "add" {
 							runtimeCfg.ContextFiles = append(runtimeCfg.ContextFiles, args[2:]...)
@@ -395,8 +399,8 @@ func newTUICommand(opts *options) *cobra.Command {
 						var out strings.Builder
 						subCmd := newRootCommand()
 						subCmd.SetArgs(append([]string{cliCmdName}, args[1:]...))
-						subCmd.SetOut(io.MultiWriter(&out, pw))
-						subCmd.SetErr(io.MultiWriter(&out, pw))
+						subCmd.SetOut(&out)
+						subCmd.SetErr(&out)
 						err := subCmd.Execute()
 						return strings.TrimSpace(out.String()), err
 					}
@@ -406,6 +410,7 @@ func newTUICommand(opts *options) *cobra.Command {
 					return "", err
 				}
 				var output strings.Builder
+				sawStream := false
 				runnerWithOutput, err := agent.New(agent.Config{
 					CWD:             opts.cwd,
 					Model:           model,
@@ -424,8 +429,48 @@ func newTUICommand(opts *options) *cobra.Command {
 					ContextFiles:    runtimeCfg.ContextFiles,
 					Provider:        provider,
 					Input:           os.Stdin,
-					Output:          io.MultiWriter(&output, pw),
+					Output:          &output,
 					Approver:        newTUIApprover(&p),
+					StreamHandler: func(event llm.StreamEvent) error {
+						if p == nil {
+							return nil
+						}
+						if event.ToolName != "" || event.ToolArgumentsDelta != "" {
+							sawStream = true
+							p.Send(tui.ToolStreamMsg{
+								ID:             event.ToolCallID,
+								Name:           event.ToolName,
+								ArgumentsDelta: event.ToolArgumentsDelta,
+							})
+						}
+						if event.Delta != "" {
+							sawStream = true
+							p.Send(tui.StreamMsg(event.Delta))
+						}
+						return nil
+					},
+					ReasoningHandler: func(text string) error {
+						if text == "" || p == nil {
+							return nil
+						}
+						p.Send(tui.ReasoningMsg(text))
+						return nil
+					},
+					ToolProgress: func(event agent.ToolProgressEvent) error {
+						if p == nil {
+							return nil
+						}
+						sawStream = true
+						p.Send(tui.ToolProgressMsg{
+							Phase:  event.Phase,
+							Tool:   event.Tool,
+							ID:     event.ID,
+							Args:   event.Args,
+							Output: event.Output,
+							Error:  event.Error,
+						})
+						return nil
+					},
 				})
 				if err != nil {
 					return "", err
@@ -439,6 +484,9 @@ func newTUICommand(opts *options) *cobra.Command {
 				}
 				captured := strings.TrimSpace(output.String())
 				debug := formatContextDebug(result.ContextDebug)
+				if sawStream {
+					return strings.TrimSpace(debug), err
+				}
 				if strings.Contains(captured, "tool:") || strings.Contains(captured, "tool error:") || strings.Contains(captured, "usage:") {
 					return strings.TrimSpace(output.String() + "\n\n" + debug), err
 				}
@@ -466,9 +514,20 @@ func newTUICommand(opts *options) *cobra.Command {
 				EditModel:       runtimeCfg.ModelRoutes["edit"],
 				DeepModel:       runtimeCfg.ModelRoutes["deep"],
 				Handler:         handler,
-				Commands:        tuiCommands,
+				PickerProvider: func(field string) (tui.PickerModal, error) {
+					switch field {
+					case "session":
+						return tuiSessionPicker(store, saved.ID)
+					case "checkpoint_restore":
+						return tuiCheckpointRestorePicker(opts.cwd)
+					default:
+						return tui.PickerModal{}, fmt.Errorf("unknown picker %q", field)
+					}
+				},
+				Commands:     tuiCommands,
+				InitialLines: tuiLinesFromMessages(saved.Messages),
 			})
-			p = tea.NewProgram(tuiModel, tea.WithAltScreen())
+			p = tea.NewProgram(tuiModel, tea.WithAltScreen(), tea.WithMouseCellMotion())
 			_, err = p.Run()
 			return err
 		},
@@ -484,6 +543,89 @@ func tuiStatus(cwd string) (string, error) {
 		return "clean", nil
 	}
 	return status.Output, nil
+}
+
+func tuiSessionPicker(store *session.Store, currentID string) (tui.PickerModal, error) {
+	sessions, err := store.List()
+	if err != nil {
+		return tui.PickerModal{}, err
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
+	})
+
+	seen := map[string]bool{}
+	options := make([]tui.PickerOption, 0, len(sessions)+1)
+	for _, saved := range sessions {
+		if strings.TrimSpace(saved.ID) == "" {
+			continue
+		}
+		seen[saved.ID] = true
+		options = append(options, tui.PickerOption{
+			Value:       saved.ID,
+			Label:       saved.ID,
+			Description: fmt.Sprintf("%d messages · updated %s", len(saved.Messages), saved.UpdatedAt.Format("2006-01-02 15:04")),
+		})
+	}
+	if strings.TrimSpace(currentID) != "" && !seen[currentID] {
+		options = append([]tui.PickerOption{{
+			Value:       currentID,
+			Label:       currentID,
+			Description: "current session · not saved yet",
+		}}, options...)
+	}
+	if len(options) == 0 {
+		return tui.PickerModal{}, fmt.Errorf("no saved sessions")
+	}
+	return tui.SessionPicker(currentID, options), nil
+}
+
+func tuiCheckpointRestorePicker(cwd string) (tui.PickerModal, error) {
+	result, err := (tools.WorkspaceCheckpointList{}).Run(context.Background(), tools.Invocation{CWD: cwd, Args: map[string]any{}})
+	if err != nil {
+		return tui.PickerModal{}, err
+	}
+	var options []tui.PickerOption
+	for _, line := range strings.Split(result.Output, "\n") {
+		id := strings.TrimSpace(line)
+		if id == "" || id == "no checkpoints" {
+			continue
+		}
+		options = append(options, tui.PickerOption{
+			Value:       id,
+			Label:       id,
+			Description: "restore workspace files from this checkpoint",
+		})
+	}
+	if len(options) == 0 {
+		return tui.PickerModal{}, fmt.Errorf("no checkpoints")
+	}
+	return tui.CheckpointRestorePicker(options), nil
+}
+
+func tuiLinesFromMessages(messages []llm.Message) []string {
+	var lines []string
+	for _, message := range messages {
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		if len(lines) > 0 {
+			lines = append(lines, "")
+		}
+		switch message.Role {
+		case llm.RoleUser:
+			lines = append(lines, "you: "+content)
+		case llm.RoleAssistant:
+			if strings.TrimSpace(message.Reasoning) != "" {
+				lines = append(lines, "thoughts:0:"+message.Reasoning)
+			}
+			lines = append(lines, "agent: "+content)
+		case llm.RoleTool:
+			lines = append(lines, "tool:0:"+content)
+		}
+	}
+	return lines
 }
 
 func formatTUISettings(cfg appconfig.Config, attachments []llm.Attachment) string {
@@ -505,6 +647,10 @@ func formatTUISettings(cfg appconfig.Config, attachments []llm.Attachment) strin
 	fmt.Fprintf(&builder, "- pending images: `%d`\n", len(attachments))
 	builder.WriteString("\nUse `/provider`, `/model`, `/reasoning`, `/limits`, `/approval`, `/sandbox`, `/mode`, `/cart add`, and `/attach` to change this without leaving Klyra.")
 	return builder.String()
+}
+
+func formatSettingSaved(name, value string) string {
+	return fmt.Sprintf("setting saved: %s = `%s`", name, valueOrString(value, "default"))
 }
 
 func applyTUISet(cfg *appconfig.Config, args []string) error {
@@ -664,6 +810,16 @@ func valueOrString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func joinNonEmpty(parts ...string) string {
+	var out []string
+	for _, part := range parts {
+		if strings.TrimSpace(part) != "" {
+			out = append(out, strings.TrimSpace(part))
+		}
+	}
+	return strings.Join(out, "\n\n")
 }
 
 func newDiffCommand(opts *options) *cobra.Command {

@@ -38,13 +38,13 @@ type settingsField struct {
 
 // SettingsModal is the full settings editor overlay.
 type SettingsModal struct {
-	Fields      []settingsField
-	Cursor      int
-	EditBuffer  string // for text fields being edited
-	Editing     bool   // true when actively typing into a text field
-	Width       int
-	Scroll      int
-	MaxVisible  int
+	Fields     []settingsField
+	Cursor     int
+	EditBuffer string // for text fields being edited
+	Editing    bool   // true when actively typing into a text field
+	Width      int
+	Scroll     int
+	MaxVisible int
 }
 
 // NewSettingsModal creates a settings modal pre-populated with current values.
@@ -58,7 +58,7 @@ func NewSettingsModal(
 		{Section: secProvider, Name: "provider", DisplayName: "Provider", Value: provider, Choices: []string{"mock", "openai", "local", "ollama", "anthropic", "gemini"}},
 		{Section: secProvider, Name: "model", DisplayName: "Model", Value: model},
 		{Section: secProvider, Name: "endpoint", DisplayName: "Endpoint", Value: endpoint},
-		{Section: secProvider, Name: "reasoning", DisplayName: "Reasoning", Value: reasoning, Choices: []string{"", "minimal", "low", "medium", "high"}},
+		{Section: secProvider, Name: "reasoning", DisplayName: "Reasoning", Value: reasoning, Choices: []string{"", "minimal", "low", "medium", "high", "xhigh"}},
 
 		// API Keys section
 		{Section: secAPIKeys, Name: "openai_key", DisplayName: "OpenAI Key", Value: "", EnvVar: "OPENAI_API_KEY", Masked: true},
@@ -406,10 +406,13 @@ func (s SettingsModal) View(termWidth, termHeight int) string {
 
 	boxWidth := s.Width
 	if boxWidth <= 0 {
-		boxWidth = 60
+		boxWidth = 68
 	}
-	if termWidth > 0 && boxWidth > termWidth-4 {
-		boxWidth = termWidth - 4
+	if termWidth > 0 && boxWidth > termWidth-8 {
+		boxWidth = termWidth - 8
+	}
+	if boxWidth < 36 {
+		boxWidth = max(24, termWidth-4)
 	}
 
 	box := lipgloss.NewStyle().

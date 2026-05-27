@@ -284,6 +284,12 @@ func processResponsesStreamData(dataLines []string, handler StreamHandler) (Resp
 				return Response{}, err
 			}
 		}
+	case "response.reasoning_summary_text.delta":
+		if event.Delta != "" && handler != nil {
+			if err := handler(StreamEvent{Reasoning: event.Delta}); err != nil {
+				return Response{}, err
+			}
+		}
 	case "response.completed":
 		return event.Response.toLLMResponse(), nil
 	case "response.failed", "response.incomplete":

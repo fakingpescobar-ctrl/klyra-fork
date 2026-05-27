@@ -3,8 +3,10 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -111,5 +113,132 @@ func TestOpenAIMessagesIncludeImagesForOllamaCompatibleVision(t *testing.T) {
 	}
 	if parts[1].ImageURL == nil || parts[1].ImageURL.URL != "data:image/png;base64,aW1hZ2U=" {
 		t.Fatalf("unexpected image url: %+v", parts[1])
+	}
+}
+
+func TestOpenAIProviderStreamsDeltasReasoningAndUsage(t *testing.T) {
+	var captured openAIChatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"reasoning_content":"thinking "}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"hel"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"thinking":"more "}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"lo"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"completion_tokens_details":{"reasoning_tokens":1}}}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAIProvider("", server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deltas strings.Builder
+	var reasoning strings.Builder
+	resp, err := provider.Stream(context.Background(), Request{
+		Model:           "local-model",
+		MaxOutputTokens: 123,
+		ReasoningEffort: "low",
+		Messages:        []Message{{Role: RoleUser, Content: "hello"}},
+	}, func(event StreamEvent) error {
+		deltas.WriteString(event.Delta)
+		reasoning.WriteString(event.Reasoning)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !captured.Stream || captured.StreamOptions == nil || !captured.StreamOptions.IncludeUsage {
+		t.Fatalf("expected stream request with usage: %+v", captured)
+	}
+	if captured.MaxTokens != 123 || captured.ReasoningEffort != "low" {
+		t.Fatalf("request limits/reasoning not sent: %+v", captured)
+	}
+	if deltas.String() != "hello" || resp.Content != "hello" {
+		t.Fatalf("unexpected streamed content deltas=%q resp=%q", deltas.String(), resp.Content)
+	}
+	if reasoning.String() != "thinking more " {
+		t.Fatalf("unexpected reasoning stream: %q", reasoning.String())
+	}
+	if resp.Usage.TotalTokens != 5 || resp.Usage.ReasoningTokens != 1 {
+		t.Fatalf("unexpected usage: %+v", resp.Usage)
+	}
+}
+
+func TestOpenAIProviderStreamsToolCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read_file","arguments":"{\"path\""}}]}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"main.go\"}"}}]}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAIProvider("test-key", server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toolEvents []StreamEvent
+	resp, err := provider.Stream(context.Background(), Request{
+		Model:    "local-model",
+		Messages: []Message{{Role: RoleUser, Content: "read main"}},
+	}, func(event StreamEvent) error {
+		if event.ToolName != "" || event.ToolArgumentsDelta != "" {
+			toolEvents = append(toolEvents, event)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(toolEvents) != 2 {
+		t.Fatalf("expected live tool call deltas, got %+v", toolEvents)
+	}
+	if toolEvents[0].ToolName != "read_file" || !strings.Contains(toolEvents[1].ToolArgumentsDelta, "main.go") {
+		t.Fatalf("unexpected live tool events: %+v", toolEvents)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("expected streamed tool call: %+v", resp.ToolCalls)
+	}
+	if resp.ToolCalls[0].Name != "read_file" || resp.ToolCalls[0].Arguments["path"] != "main.go" {
+		t.Fatalf("unexpected streamed tool call: %+v", resp.ToolCalls[0])
+	}
+}
+
+func TestOpenAIProviderRoutesThinkTagsToReasoning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"<thi"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"nk>hidden"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":" thoughts</thi"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"nk>visible"}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAIProvider("", server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deltas strings.Builder
+	var reasoning strings.Builder
+	resp, err := provider.Stream(context.Background(), Request{
+		Model:    "local-model",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	}, func(event StreamEvent) error {
+		deltas.WriteString(event.Delta)
+		reasoning.WriteString(event.Reasoning)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != "visible" || deltas.String() != "visible" {
+		t.Fatalf("unexpected visible content resp=%q deltas=%q", resp.Content, deltas.String())
+	}
+	if reasoning.String() != "hidden thoughts" {
+		t.Fatalf("unexpected think-tag reasoning: %q", reasoning.String())
 	}
 }

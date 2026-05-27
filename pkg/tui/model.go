@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,23 +21,23 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
-	colorBrand      = lipgloss.Color("#A78BFA") // violet
-	colorBrandDim   = lipgloss.Color("#7C3AED") // deeper violet
-	colorBlue       = lipgloss.Color("#60A5FA") // soft blue
-	colorText       = lipgloss.Color("#E5E7EB") // off-white
-	colorDim        = lipgloss.Color("#6B7280") // warm gray
-	colorMuted      = lipgloss.Color("#4B5563") // muted
-	colorSeparator  = lipgloss.Color("#374151") // charcoal
-	colorSurface    = lipgloss.Color("#1F2937") // dark surface
-	colorEmerald    = lipgloss.Color("#34D399") // green
-	colorAmber      = lipgloss.Color("#FBBF24") // amber
-	colorRed        = lipgloss.Color("#F87171") // soft red
-	colorBadgeBg    = lipgloss.Color("#312E81") // indigo dark bg
-	colorBadgeBg2   = lipgloss.Color("#1E3A5F") // blue dark bg
-	colorBadgeBg3   = lipgloss.Color("#3B1F5E") // purple dark bg
-	colorBadgeBg4   = lipgloss.Color("#1A3636") // teal dark bg
-	colorWhite      = lipgloss.Color("#F9FAFB") // near-white
-	colorInputBg    = lipgloss.Color("#111827") // very dark bg
+	colorBrand     = lipgloss.Color("#A78BFA") // violet
+	colorBrandDim  = lipgloss.Color("#7C3AED") // deeper violet
+	colorBlue      = lipgloss.Color("#60A5FA") // soft blue
+	colorText      = lipgloss.Color("#E5E7EB") // off-white
+	colorDim       = lipgloss.Color("#6B7280") // warm gray
+	colorMuted     = lipgloss.Color("#4B5563") // muted
+	colorSeparator = lipgloss.Color("#374151") // charcoal
+	colorSurface   = lipgloss.Color("#1F2937") // dark surface
+	colorEmerald   = lipgloss.Color("#34D399") // green
+	colorAmber     = lipgloss.Color("#FBBF24") // amber
+	colorRed       = lipgloss.Color("#F87171") // soft red
+	colorBadgeBg   = lipgloss.Color("#312E81") // indigo dark bg
+	colorBadgeBg2  = lipgloss.Color("#1E3A5F") // blue dark bg
+	colorBadgeBg3  = lipgloss.Color("#3B1F5E") // purple dark bg
+	colorBadgeBg4  = lipgloss.Color("#1A3636") // teal dark bg
+	colorWhite     = lipgloss.Color("#F9FAFB") // near-white
+	colorInputBg   = lipgloss.Color("#111827") // very dark bg
 )
 
 // ---------------------------------------------------------------------------
@@ -75,9 +76,26 @@ func tickSpinner() tea.Cmd {
 
 type Handler func(string) (string, error)
 
+type PickerProvider func(field string) (PickerModal, error)
+
 type StreamMsg string
 
 type ReasoningMsg string
+
+type ToolStreamMsg struct {
+	ID             string
+	Name           string
+	ArgumentsDelta string
+}
+
+type ToolProgressMsg struct {
+	Phase  string
+	Tool   string
+	ID     string
+	Args   map[string]any
+	Output string
+	Error  string
+}
 
 type ApprovalRequestMsg struct {
 	Tool   string
@@ -113,7 +131,9 @@ type Config struct {
 	EditModel       string
 	DeepModel       string
 	Handler         Handler
+	PickerProvider  PickerProvider
 	Commands        []CommandDef
+	InitialLines    []string
 }
 
 type modalKind int
@@ -146,6 +166,7 @@ type Model struct {
 	editModel       string
 	deepModel       string
 	handler         Handler
+	pickerProvider  PickerProvider
 	input           textinput.Model
 	lines           []string
 	width           int
@@ -167,6 +188,7 @@ type Model struct {
 	tempInput       string
 	reasoningText   string
 	reasonExpanded  bool
+	copyMode        bool
 
 	// Modal state
 	activeModal   modalKind
@@ -176,9 +198,20 @@ type Model struct {
 }
 
 type responseMsg struct {
-	input  string
-	output string
+	input    string
+	output   string
+	err      error
+	agentRun bool
+}
+
+type pickerLoadedMsg struct {
+	picker PickerModal
 	err    error
+}
+
+type SessionLoadedMsg struct {
+	SessionID string
+	Lines     []string
 }
 
 func New(cfg Config) Model {
@@ -192,7 +225,7 @@ func New(cfg Config) Model {
 	input.PlaceholderStyle = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 	input.Focus()
 	input.CharLimit = 8000
-	
+
 	title := cfg.Title
 	if strings.TrimSpace(title) == "" {
 		title = "Klyra"
@@ -204,6 +237,7 @@ func New(cfg Config) Model {
 
 	renderer, _ := glamour.NewTermRenderer(
 		glamour.WithStandardStyle("dark"),
+		glamour.WithPreservedNewLines(),
 		glamour.WithWordWrap(80),
 	)
 
@@ -228,12 +262,13 @@ func New(cfg Config) Model {
 		editModel:       cfg.EditModel,
 		deepModel:       cfg.DeepModel,
 		handler:         handler,
+		pickerProvider:  cfg.PickerProvider,
 		input:           input,
 		commands:        cfg.Commands,
 		filteredCmds:    nil,
 		selectedCmdIdx:  0,
 		renderer:        renderer,
-		lines:           []string{},
+		lines:           append([]string(nil), cfg.InitialLines...),
 		viewport:        viewport.New(80, 20),
 		history:         []string{},
 		historyIdx:      0,
@@ -258,6 +293,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.Width = max(20, msg.Width-6)
 		m.renderer, _ = glamour.NewTermRenderer(
 			glamour.WithStandardStyle("dark"),
+			glamour.WithPreservedNewLines(),
 			glamour.WithWordWrap(max(40, m.width-8)),
 		)
 		m.syncViewport(true)
@@ -269,6 +305,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tickSpinner()
 		}
 		return m, nil
+	case tea.MouseMsg:
+		switch msg.Type {
+		case tea.MouseLeft:
+			if m.handleViewportClick(msg.Y) {
+				m.syncViewport(false)
+				return m, nil
+			}
+		case tea.MouseWheelUp:
+			m.viewport.LineUp(3)
+			return m, nil
+		case tea.MouseWheelDown:
+			m.viewport.LineDown(3)
+			return m, nil
+		}
 	case tea.KeyMsg:
 		// Approval prompt takes highest priority
 		if m.approvalReq != nil {
@@ -303,15 +353,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncViewport(m.debugExpanded)
 			return m, nil
 		case "f4":
-			m.reasonExpanded = !m.reasonExpanded
-			m.syncViewport(m.reasonExpanded)
+			m.toggleLatestThoughts()
+			m.syncViewport(true)
 			return m, nil
+		case "f6":
+			m.copyMode = !m.copyMode
+			if m.copyMode {
+				return m, tea.Batch(tea.DisableMouse, tea.ExitAltScreen)
+			}
+			return m, tea.Batch(tea.EnterAltScreen, tea.EnableMouseCellMotion)
 		case "pgup":
 			m.viewport.PageUp()
 			return m, nil
 		case "pgdn":
 			m.viewport.PageDown()
 			return m, nil
+		case "right", "l":
+			if m.toggleLatestThoughtsExpand(true) {
+				m.syncViewport(true)
+				return m, nil
+			}
+		case "left", "h":
+			if m.toggleLatestThoughtsExpand(false) {
+				m.syncViewport(true)
+				return m, nil
+			}
 		case "shift+up":
 			m.viewport.LineUp(1)
 			return m, nil
@@ -326,8 +392,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			m.viewport.LineUp(1)
-			return m, nil
+			return m.historyPrevious()
 		case "shift+tab":
 			if len(m.filteredCmds) > 0 {
 				m.selectedCmdIdx--
@@ -344,8 +409,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			m.viewport.LineDown(1)
-			return m, nil
+			return m.historyNext()
 		case "tab":
 			if len(m.filteredCmds) > 0 {
 				m.selectedCmdIdx++
@@ -355,32 +419,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "ctrl+up", "ctrl+p":
-			if len(m.history) > 0 {
-				if m.historyIdx == len(m.history) {
-					m.tempInput = m.input.Value()
-				}
-				m.historyIdx--
-				if m.historyIdx < 0 {
-					m.historyIdx = 0
-				}
-				m.input.SetValue(m.history[m.historyIdx])
-				m.input.SetCursor(len(m.input.Value()))
-				return m, nil
-			}
+			return m.historyPrevious()
 		case "ctrl+down", "ctrl+n":
-			if len(m.history) > 0 {
-				m.historyIdx++
-				if m.historyIdx > len(m.history) {
-					m.historyIdx = len(m.history)
-				}
-				if m.historyIdx == len(m.history) {
-					m.input.SetValue(m.tempInput)
-				} else {
-					m.input.SetValue(m.history[m.historyIdx])
-				}
-				m.input.SetCursor(len(m.input.Value()))
-				return m, nil
-			}
+			return m.historyNext()
 		case "enter":
 			if len(m.filteredCmds) > 0 {
 				m.input.SetValue(m.filteredCmds[m.selectedCmdIdx].Name + " ")
@@ -390,7 +431,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			value := strings.TrimSpace(m.input.Value())
-			if value == "" || m.busy {
+			if value == "" {
+				if m.toggleLatestThoughts() {
+					m.syncViewport(false)
+				}
 				return m, nil
 			}
 			if len(m.history) == 0 || m.history[len(m.history)-1] != value {
@@ -407,6 +451,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if handled, cmd := m.handleLocalCommand(value); handled {
 				return m, cmd
 			}
+			if m.busy {
+				m.lines = append(m.lines, "", "system: agent is still running; slash commands remain available")
+				m.syncViewport(true)
+				return m, nil
+			}
 			m.busy = true
 			m.streamBuf = ""
 			m.reasoningText = ""
@@ -417,27 +466,70 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.lines = append(m.lines, "you: "+value)
 			m.syncViewport(true)
-			return m, tea.Batch(runHandler(m.handler, value), tickSpinner())
+			return m, tea.Batch(runHandler(m.handler, value, true), tickSpinner())
 		}
 	case StreamMsg:
+		wasAtBottom := m.viewport.AtBottom()
 		m.streamBuf += string(msg)
-		m.syncViewport(true)
+		m.syncViewport(wasAtBottom)
 		return m, nil
 	case ReasoningMsg:
+		wasAtBottom := m.viewport.AtBottom()
 		m.reasoningText += string(msg)
-		m.syncViewport(true)
+		m.syncViewport(wasAtBottom)
+		return m, nil
+	case ToolStreamMsg:
+		wasAtBottom := m.viewport.AtBottom()
+		m.appendToolStream(msg)
+		m.syncViewport(wasAtBottom)
+		return m, nil
+	case ToolProgressMsg:
+		wasAtBottom := m.viewport.AtBottom()
+		m.appendToolProgress(msg)
+		m.syncViewport(wasAtBottom)
 		return m, nil
 	case ApprovalRequestMsg:
+		wasAtBottom := m.viewport.AtBottom()
 		m.approvalReq = &msg
+		m.syncViewport(wasAtBottom)
+		return m, nil
+	case pickerLoadedMsg:
+		if msg.err != nil {
+			m.lines = append(m.lines, "", "error: "+msg.err.Error())
+			m.syncViewport(true)
+			return m, nil
+		}
+		m.openPickerModal(msg.picker)
+		return m, nil
+	case SessionLoadedMsg:
+		m.sessionID = msg.SessionID
+		m.lines = append([]string(nil), msg.Lines...)
+		m.contextDebug = ""
+		m.streamBuf = ""
+		m.reasoningText = ""
+		m.reasonExpanded = false
 		m.syncViewport(true)
 		return m, nil
 	case responseMsg:
-		m.busy = false
-		m.streamBuf = ""
+		wasAtBottom := m.viewport.AtBottom()
+		if msg.agentRun {
+			m.busy = false
+		}
+		streamedText := strings.TrimSpace(m.streamBuf)
+		if msg.agentRun {
+			m.streamBuf = ""
+		}
 		m.err = msg.err
 		if msg.err != nil {
 			m.lines = append(m.lines, "")
 			m.lines = append(m.lines, "error: "+msg.err.Error())
+		}
+		if msg.agentRun && streamedText != "" {
+			m.lines = append(m.lines, "")
+			m.appendThoughtsOutput(m.reasoningText, false)
+			m.reasoningText = ""
+			m.reasonExpanded = false
+			m.appendAgentOutput(streamedText)
 		}
 
 		outText := strings.TrimSpace(msg.output)
@@ -468,13 +560,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				flushAssistant := func() {
 					if len(assistantBlock) > 0 {
-						text := strings.Join(assistantBlock, "\n")
-						if m.renderer != nil {
-							if rendered, errRender := m.renderer.Render(text); errRender == nil {
-								text = strings.TrimRight(rendered, " \n\r\t")
-							}
-						}
-						m.lines = append(m.lines, "agent: "+text+"\x1b[0m")
+						m.appendThoughtsOutput(m.reasoningText, false)
+						m.reasoningText = ""
+						m.reasonExpanded = false
+						m.appendAgentOutput(strings.Join(assistantBlock, "\n"))
 						assistantBlock = nil
 					}
 				}
@@ -532,7 +621,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				flushMd()
 			}
 		}
-		m.syncViewport(true)
+		m.syncViewport(wasAtBottom)
 		return m, nil
 	}
 
@@ -594,16 +683,28 @@ func (m Model) buildFormattedLines() []string {
 		if strings.HasPrefix(line, "you: ") {
 			formattedLines = append(formattedLines, userMsgStyle.Render("  "+userPrefix+" "+line[5:]))
 		} else if strings.HasPrefix(line, "agent: ") {
-			agentLines := strings.Split(line[7:], "\n")
-			for _, al := range agentLines {
-				formattedLines = append(formattedLines, agentBarStyle.Render(agentBar)+" "+agentMsgStyle.Render(al))
+			text := line[7:]
+			if m.renderer != nil {
+				if rendered, err := m.renderer.Render(text); err == nil {
+					text = strings.TrimRight(rendered, " \n\r\t")
+				}
 			}
+			agentLines := strings.Split(text, "\n")
+			for _, al := range agentLines {
+				formattedLines = append(formattedLines, agentBarStyle.Render(agentBar)+" "+agentMsgStyle.Render(al)+"\x1b[0m")
+			}
+		} else if strings.HasPrefix(line, "thoughts:") {
+			formattedLines = append(formattedLines, m.renderThoughtBlock(line)...)
 		} else if strings.HasPrefix(line, "error: ") {
 			formattedLines = append(formattedLines, errorMsgStyle.Render("  "+errorPrefix+" "+line[7:]))
 		} else if strings.HasPrefix(line, "system: ") {
 			formattedLines = append(formattedLines, systemMsgStyle.Render("  "+systemPrefix+" "+line[8:]))
-		} else if strings.HasPrefix(line, "tool: ") {
-			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorEmerald).Render("  tool: "+line[6:]))
+		} else if strings.HasPrefix(line, "toolstream: ") {
+			formattedLines = append(formattedLines, m.renderToolStreamLine(line[len("toolstream: "):])...)
+		} else if strings.HasPrefix(line, "toolprogress:") {
+			formattedLines = append(formattedLines, m.renderToolProgressLine(line)...)
+		} else if strings.HasPrefix(line, "tool:") {
+			formattedLines = append(formattedLines, m.renderToolLine(line)...)
 		} else if strings.HasPrefix(line, "tool rejected: ") {
 			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorRed).Bold(true).Render("  tool rejected: "+line[15:]))
 		} else if strings.HasPrefix(line, "tool error: ") {
@@ -613,7 +714,7 @@ func (m Model) buildFormattedLines() []string {
 		} else if strings.HasPrefix(line, "policy: ") {
 			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorAmber).Render("  policy: "+line[8:]))
 		} else if strings.HasPrefix(line, "md: ") {
-			formattedLines = append(formattedLines, "  "+line[4:])
+			formattedLines = append(formattedLines, renderCommandOutputLine(line[4:]))
 		} else if line == "" {
 			formattedLines = append(formattedLines, "")
 		} else {
@@ -624,6 +725,10 @@ func (m Model) buildFormattedLines() []string {
 	// Streaming content with spinner
 	if m.busy && m.streamBuf != "" {
 		formattedLines = append(formattedLines, "")
+		if strings.TrimSpace(m.reasoningText) != "" {
+			formattedLines = append(formattedLines, m.renderLiveThoughtBlock()...)
+			formattedLines = append(formattedLines, "")
+		}
 
 		var rendered string
 		var err error
@@ -645,55 +750,18 @@ func (m Model) buildFormattedLines() []string {
 		}
 	} else if m.busy {
 		formattedLines = append(formattedLines, "")
-		formattedLines = append(formattedLines, m.renderThinkingBar())
-	}
-
-	// Model thoughts
-	if m.reasoningText != "" {
-		formattedLines = append(formattedLines, "")
-		if m.reasonExpanded {
-			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorBrandDim).Render("  [F4] Hide Thoughts"))
-			
-			styleThoughts := lipgloss.NewStyle().Foreground(colorDim)
-			styleBorder := lipgloss.NewStyle().Foreground(colorBrandDim)
-			
-			for _, line := range strings.Split(m.reasoningText, "\n") {
-				formattedLines = append(formattedLines, "  "+styleBorder.Render("│")+" "+styleThoughts.Render(line))
-			}
-		} else {
-			lines := strings.Split(m.reasoningText, "\n")
-			lastLine := ""
-			for i := len(lines) - 1; i >= 0; i-- {
-				if trimmed := strings.TrimSpace(lines[i]); trimmed != "" {
-					lastLine = trimmed
-					break
-				}
-			}
-			if lastLine == "" {
-				lastLine = "thinking..."
-			}
-			
-			maxLen := 80
-			if m.width > 40 && m.width-30 < maxLen {
-				maxLen = m.width - 30
-			}
-			if len(lastLine) > maxLen {
-				lastLine = lastLine[len(lastLine)-maxLen:]
-				if idx := strings.Index(lastLine, " "); idx != -1 {
-					lastLine = "..." + lastLine[idx:]
-				} else {
-					lastLine = "..." + lastLine
-				}
-			}
-			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorBrandDim).Render(fmt.Sprintf("  [F4] Show Thoughts: 💭 %s", lastLine)))
+		if strings.TrimSpace(m.reasoningText) != "" {
+			formattedLines = append(formattedLines, m.renderLiveThoughtBlock()...)
+			formattedLines = append(formattedLines, "")
 		}
+		formattedLines = append(formattedLines, m.renderThinkingBar())
 	}
 
 	if m.contextDebug != "" {
 		formattedLines = append(formattedLines, "")
 		if m.debugExpanded {
 			formattedLines = append(formattedLines, lipgloss.NewStyle().Foreground(colorBrandDim).Render("  [F3] Hide Context Debugger"))
-			
+
 			// Render the debugger text via Glamour
 			text := m.contextDebug
 			if m.renderer != nil {
@@ -755,22 +823,22 @@ func (m Model) View() string {
 
 	// Overlays: approval prompt
 	if m.approvalReq != nil {
-		body = lipgloss.JoinVertical(lipgloss.Left, body, m.renderApprovalModal())
+		body = centerOverlay(m.width, m.viewport.Height, m.renderApprovalModal())
 	}
 
 	// Modal overlays
 	switch m.activeModal {
 	case modalPicker:
 		if m.pickerModal != nil {
-			body = lipgloss.JoinVertical(lipgloss.Left, body, m.pickerModal.View(m.width))
+			body = centerOverlay(m.width, m.viewport.Height, m.pickerModal.View(m.width))
 		}
 	case modalHelp:
 		if m.helpModal != nil {
-			body = lipgloss.JoinVertical(lipgloss.Left, body, m.helpModal.View(m.width, m.height))
+			body = centerOverlay(m.width, m.viewport.Height, m.helpModal.View(m.width, m.height))
 		}
 	case modalSettings:
 		if m.settingsModal != nil {
-			body = lipgloss.JoinVertical(lipgloss.Left, body, m.settingsModal.View(m.width, m.height))
+			body = centerOverlay(m.width, m.viewport.Height, m.settingsModal.View(m.width, m.height))
 		}
 	}
 
@@ -958,13 +1026,28 @@ func (m Model) updatePickerModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = value
 		case "reasoning":
 			m.reasoning = value
+		case "session":
+			m.sessionID = value
 		}
 
 		// Send to handler
-		cmdText := "/" + field + " " + value
+		cmdName := field
+		if field == "checkpoint" && value == "restore" && m.pickerProvider != nil {
+			return m, runPickerProvider(m.pickerProvider, "checkpoint_restore")
+		}
+		if field == "checkpoint_restore" {
+			cmdText := "/checkpoint restore " + value
+			m.lines = append(m.lines, "system: checkpoint restore → "+valueOr(value, "default"))
+			m.syncViewport(true)
+			return m, runHandler(m.handler, cmdText, false)
+		}
+		if field == "session" {
+			cmdName = "session"
+		}
+		cmdText := "/" + cmdName + " " + value
 		m.lines = append(m.lines, "system: "+field+" → "+valueOr(value, "default"))
 		m.syncViewport(true)
-		return m, runHandler(m.handler, cmdText)
+		return m, runHandler(m.handler, cmdText, false)
 	}
 	return m, nil
 }
@@ -1113,7 +1196,7 @@ func (m Model) updateSettingsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.closeModal()
 		m.lines = append(m.lines, "system: settings saved")
 		m.syncViewport(true)
-		return m, runHandler(m.handler, cmdText)
+		return m, runHandler(m.handler, cmdText, false)
 	}
 	if len(msg.Runes) > 0 {
 		sm.TypeChar(string(msg.Runes))
@@ -1130,7 +1213,7 @@ func (m Model) renderHeader() string {
 
 	// --- Logo (>< chevrons with gradient bar) ---
 	chevronStyle := lipgloss.NewStyle().Foreground(colorWhite).Bold(true)
-	
+
 	colors := []string{"#A855F7", "#8B5CF6", "#6366F1", "#3B82F6", "#0EA5E9", "#06B6D4"}
 	var gradientBar strings.Builder
 	for _, hex := range colors {
@@ -1223,7 +1306,11 @@ func (m Model) renderFooter() string {
 	}
 	leftFooter := " " + strings.Join(leftParts, "  ")
 
-	settingsHint := lipgloss.NewStyle().Foreground(colorMuted).Render("F2 settings")
+	copyHint := "F6 copy"
+	if m.copyMode {
+		copyHint = "F6 scroll"
+	}
+	settingsHint := lipgloss.NewStyle().Foreground(colorMuted).Render("F2 settings  " + copyHint)
 	rightFooter := modelStyle.Render(valueOr(m.model, "routed")) + "  " + settingsHint + " "
 
 	separator := sepStyle.Render(strings.Repeat("─", max(10, m.width)))
@@ -1293,6 +1380,22 @@ func (m *Model) handleLocalCommand(value string) (bool, tea.Cmd) {
 		case "/reasoning":
 			m.openPickerModal(ReasoningPicker(m.reasoning))
 			return true, nil
+		case "/sessions":
+			if m.pickerProvider != nil {
+				return true, runPickerProvider(m.pickerProvider, "session")
+			}
+		case "/checkpoint":
+			m.openPickerModal(CheckpointPicker())
+			return true, nil
+		case "/config":
+			m.openPickerModal(ConfigPicker())
+			return true, nil
+		case "/instructions":
+			m.openPickerModal(InstructionsPicker())
+			return true, nil
+		case "/diff":
+			m.openPickerModal(DiffPicker())
+			return true, nil
 		case "/settings":
 			m.openSettingsModal()
 			return true, nil
@@ -1304,17 +1407,12 @@ func (m *Model) handleLocalCommand(value string) (bool, tea.Cmd) {
 
 	if strings.HasPrefix(value, "/") {
 		m.applyOptimisticCommand(value)
-		m.busy = true
-		m.streamBuf = ""
-		m.reasoningText = ""
-		m.reasonExpanded = false
-		m.spinnerFrame = 0
 		if len(m.lines) > 0 {
 			m.lines = append(m.lines, "")
 		}
 		m.lines = append(m.lines, "you: "+value)
 		m.syncViewport(true)
-		return true, tea.Batch(runHandler(m.handler, value), tickSpinner())
+		return true, runHandler(m.handler, value, false)
 	}
 
 	return false, nil
@@ -1461,11 +1559,509 @@ func shorten(value string, maxLen int) string {
 	return value[:maxLen-1] + "..."
 }
 
-func runHandler(handler Handler, input string) tea.Cmd {
+func runHandler(handler Handler, input string, agentRun bool) tea.Cmd {
 	return func() tea.Msg {
 		output, err := handler(input)
-		return responseMsg{input: input, output: output, err: err}
+		return responseMsg{input: input, output: output, err: err, agentRun: agentRun}
 	}
+}
+
+func runPickerProvider(provider PickerProvider, field string) tea.Cmd {
+	return func() tea.Msg {
+		picker, err := provider(field)
+		return pickerLoadedMsg{picker: picker, err: err}
+	}
+}
+
+func centerOverlay(width, height int, content string) string {
+	if width <= 0 {
+		width = 80
+	}
+	if height <= 0 {
+		height = 20
+	}
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, content)
+}
+
+func (m *Model) appendAgentOutput(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	m.lines = append(m.lines, "agent: "+text)
+}
+
+func (m *Model) appendThoughtsOutput(text string, expanded bool) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	state := "0"
+	if expanded {
+		state = "1"
+	}
+	m.lines = append(m.lines, "thoughts:"+state+":"+text)
+}
+
+func (m *Model) appendToolStream(msg ToolStreamMsg) {
+	if strings.TrimSpace(msg.Name) == "" && strings.TrimSpace(msg.ArgumentsDelta) == "" {
+		return
+	}
+	if data, err := json.Marshal(msg); err == nil {
+		m.lines = append(m.lines, "toolstream: "+string(data))
+	}
+}
+
+func (m *Model) appendToolProgress(msg ToolProgressMsg) {
+	if strings.TrimSpace(msg.Tool) == "" {
+		return
+	}
+	if data, err := json.Marshal(msg); err == nil {
+		m.lines = append(m.lines, "toolprogress:0:"+string(data))
+	}
+}
+
+func (m *Model) toggleLatestThoughts() bool {
+	if strings.TrimSpace(m.reasoningText) != "" {
+		m.reasonExpanded = !m.reasonExpanded
+		return true
+	}
+	for i := len(m.lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(m.lines[i], "thoughts:0:") {
+			m.lines[i] = "thoughts:1:" + strings.TrimPrefix(m.lines[i], "thoughts:0:")
+			return true
+		}
+		if strings.HasPrefix(m.lines[i], "thoughts:1:") {
+			m.lines[i] = "thoughts:0:" + strings.TrimPrefix(m.lines[i], "thoughts:1:")
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) toggleLatestThoughtsExpand(expanded bool) bool {
+	if strings.TrimSpace(m.reasoningText) != "" {
+		m.reasonExpanded = expanded
+		return true
+	}
+	for i := len(m.lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(m.lines[i], "thoughts:0:") || strings.HasPrefix(m.lines[i], "thoughts:1:") {
+			text := strings.TrimPrefix(strings.TrimPrefix(m.lines[i], "thoughts:0:"), "thoughts:1:")
+			state := "0"
+			if expanded {
+				state = "1"
+			}
+			m.lines[i] = "thoughts:" + state + ":" + text
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) toggleLatestToolDetails() bool {
+	for i := len(m.lines) - 1; i >= 0; i-- {
+		switch {
+		case strings.HasPrefix(m.lines[i], "toolprogress:0:"):
+			m.lines[i] = "toolprogress:1:" + strings.TrimPrefix(m.lines[i], "toolprogress:0:")
+			return true
+		case strings.HasPrefix(m.lines[i], "toolprogress:1:"):
+			m.lines[i] = "toolprogress:0:" + strings.TrimPrefix(m.lines[i], "toolprogress:1:")
+			return true
+		case strings.HasPrefix(m.lines[i], "tool:0:"):
+			m.lines[i] = "tool:1:" + strings.TrimPrefix(m.lines[i], "tool:0:")
+			return true
+		case strings.HasPrefix(m.lines[i], "tool:1:"):
+			m.lines[i] = "tool:0:" + strings.TrimPrefix(m.lines[i], "tool:1:")
+			return true
+		case strings.HasPrefix(m.lines[i], "tool: "):
+			m.lines[i] = "tool:1:" + strings.TrimPrefix(m.lines[i], "tool: ")
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) handleViewportClick(y int) bool {
+	if y < 0 || y >= m.viewport.Height {
+		return false
+	}
+	lines := m.currentViewportLines()
+	index := m.viewport.YOffset + y
+	if index < 0 || index >= len(lines) {
+		return false
+	}
+	plain := stripANSICodes(lines[index])
+	if strings.Contains(plain, "Thinking") || strings.Contains(plain, "Thoughts") {
+		return m.toggleLatestThoughts()
+	}
+	if strings.Contains(plain, "▸ ") || strings.Contains(plain, "▾ ") || strings.Contains(plain, "details") {
+		return m.toggleLatestToolDetails()
+	}
+	return false
+}
+
+func (m Model) currentViewportLines() []string {
+	lines := m.buildFormattedLines()
+	padding := m.viewport.Height - len(lines)
+	if padding > 0 {
+		paddedLines := make([]string, padding)
+		lines = append(paddedLines, lines...)
+	}
+	return lines
+}
+
+func stripANSICodes(value string) string {
+	var out strings.Builder
+	inEscape := false
+	for _, r := range value {
+		if inEscape {
+			if r >= '@' && r <= '~' {
+				inEscape = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEscape = true
+			continue
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
+}
+
+func (m Model) renderLiveThoughtBlock() []string {
+	return m.renderThoughts(m.reasoningText, m.reasonExpanded, true)
+}
+
+func (m Model) renderThoughtBlock(line string) []string {
+	expanded := strings.HasPrefix(line, "thoughts:1:")
+	text := strings.TrimPrefix(strings.TrimPrefix(line, "thoughts:0:"), "thoughts:1:")
+	return m.renderThoughts(text, expanded, false)
+}
+
+func (m Model) renderThoughts(text string, expanded, live bool) []string {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	icon := "▸"
+	label := "Thoughts"
+	if live {
+		label = "Thinking"
+	}
+	if expanded {
+		icon = "▾"
+	}
+	headerStyle := lipgloss.NewStyle().Foreground(colorDim).Background(colorInputBg).Padding(0, 1)
+	bodyStyle := lipgloss.NewStyle().Foreground(colorDim).Background(colorInputBg).Padding(0, 1).Width(max(24, m.width-8))
+	borderStyle := lipgloss.NewStyle().Foreground(colorMuted)
+
+	header := headerStyle.Render(fmt.Sprintf("%s %s", icon, label))
+	if !expanded {
+		summary := compactThoughtSummary(text, max(20, m.width-22))
+		return []string{"  " + borderStyle.Render("┌") + header + " " + lipgloss.NewStyle().Foreground(colorMuted).Render(summary)}
+	}
+
+	var lines []string
+	lines = append(lines, "  "+borderStyle.Render("┌")+" "+header)
+	rendered := text
+	if m.renderer != nil {
+		if out, err := m.renderer.Render(text); err == nil {
+			rendered = strings.TrimRight(out, " \n\r\t")
+		}
+	}
+	wrapped := bodyStyle.Render(rendered)
+	for _, line := range strings.Split(strings.TrimRight(wrapped, "\n"), "\n") {
+		lines = append(lines, "  "+borderStyle.Render("│")+" "+line)
+	}
+	lines = append(lines, "  "+borderStyle.Render("└")+" "+lipgloss.NewStyle().Foreground(colorMuted).Render("Enter/F4 toggles"))
+	return lines
+}
+
+func compactThoughtSummary(text string, maxLen int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) <= maxLen {
+		return text
+	}
+	if maxLen <= 3 {
+		return text[:maxLen]
+	}
+	return text[:maxLen-3] + "..."
+}
+
+type toolDisplay struct {
+	Tool   string `json:"tool"`
+	Output string `json:"output"`
+	Error  string `json:"error"`
+}
+
+func (m Model) renderToolStreamLine(raw string) []string {
+	var msg ToolStreamMsg
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		return []string{lipgloss.NewStyle().Foreground(colorEmerald).Render("  ◇ tool call " + raw)}
+	}
+	name := strings.TrimSpace(msg.Name)
+	if name == "" {
+		name = "tool"
+	}
+	delta := strings.TrimSpace(msg.ArgumentsDelta)
+	headerStyle := lipgloss.NewStyle().Foreground(colorEmerald).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	bodyStyle := lipgloss.NewStyle().Foreground(colorDim).Width(max(24, m.width-12))
+	lines := []string{"  " + headerStyle.Render("◇ "+name) + " " + labelStyle.Render("model is preparing tool call")}
+	if delta != "" {
+		for _, line := range strings.Split(bodyStyle.Render(delta), "\n") {
+			lines = append(lines, "  "+lipgloss.NewStyle().Foreground(colorMuted).Render("│")+" "+line)
+		}
+	}
+	return lines
+}
+
+func (m Model) renderToolProgressLine(raw string) []string {
+	expanded, raw := parseCollapsiblePayload(raw, "toolprogress")
+	var msg ToolProgressMsg
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		return []string{lipgloss.NewStyle().Foreground(colorEmerald).Render("  ◆ tool " + raw)}
+	}
+	phase := strings.TrimSpace(msg.Phase)
+	if phase == "" {
+		phase = "running"
+	}
+	name := strings.TrimSpace(msg.Tool)
+	if name == "" {
+		name = "tool"
+	}
+	headerStyle := lipgloss.NewStyle().Foreground(colorEmerald).Bold(true)
+	if phase == "error" || phase == "rejected" {
+		headerStyle = lipgloss.NewStyle().Foreground(colorRed).Bold(true)
+	}
+	labelStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	bodyStyle := lipgloss.NewStyle().Foreground(colorDim).Width(max(24, m.width-12))
+	borderStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	errorStyle := lipgloss.NewStyle().Foreground(colorRed)
+
+	summary := toolProgressSummary(msg)
+	icon := "▸"
+	if expanded {
+		icon = "▾"
+	}
+	lines := []string{"  " + headerStyle.Render(icon+" "+name) + " " + labelStyle.Render(summary)}
+	if !expanded {
+		return lines
+	}
+	if len(msg.Args) > 0 && (phase == "queued" || phase == "running") {
+		if data, err := json.Marshal(msg.Args); err == nil {
+			for _, line := range strings.Split(bodyStyle.Render(string(data)), "\n") {
+				lines = append(lines, "  "+borderStyle.Render("│")+" "+line)
+			}
+		}
+	}
+	output := strings.TrimRight(msg.Output, "\n")
+	if output != "" {
+		for _, line := range strings.Split(bodyStyle.Render(output), "\n") {
+			lines = append(lines, "  "+borderStyle.Render("│")+" "+line)
+		}
+	}
+	if strings.TrimSpace(msg.Error) != "" {
+		for _, line := range strings.Split(bodyStyle.Render(msg.Error), "\n") {
+			lines = append(lines, "  "+borderStyle.Render("│")+" "+errorStyle.Render(line))
+		}
+	}
+	return lines
+}
+
+func toolProgressSummary(msg ToolProgressMsg) string {
+	phase := strings.TrimSpace(msg.Phase)
+	if phase == "" {
+		phase = "running"
+	}
+	switch phase {
+	case "queued":
+		return "planned tool call, details collapsed"
+	case "running":
+		return "running tool, details collapsed"
+	case "done":
+		if strings.TrimSpace(msg.Output) == "" {
+			return "finished with empty result"
+		}
+		return fmt.Sprintf("finished, %s", outputSummary(msg.Output, 70))
+	case "error":
+		return fmt.Sprintf("failed, %s", outputSummary(msg.Error, 70))
+	case "rejected":
+		return fmt.Sprintf("rejected, %s", outputSummary(msg.Error, 70))
+	default:
+		return phase + ", details collapsed"
+	}
+}
+
+func toolPhaseLabel(phase string) string {
+	switch phase {
+	case "queued":
+		return "queued"
+	case "running":
+		return "running"
+	case "done":
+		return "done"
+	case "error":
+		return "error"
+	case "rejected":
+		return "rejected"
+	default:
+		return phase
+	}
+}
+
+func (m Model) renderToolLine(raw string) []string {
+	expanded, raw := parseCollapsiblePayload(raw, "tool")
+	raw = strings.TrimSpace(raw)
+	display := toolDisplay{Tool: "tool", Output: raw}
+	if strings.HasPrefix(raw, "{") {
+		var parsed toolDisplay
+		if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+			display = parsed
+		}
+	}
+	if strings.TrimSpace(display.Tool) == "" {
+		display.Tool = "tool"
+	}
+
+	headerStyle := lipgloss.NewStyle().Foreground(colorEmerald).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	bodyStyle := lipgloss.NewStyle().Foreground(colorDim).Width(max(24, m.width-10))
+	borderStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	errorStyle := lipgloss.NewStyle().Foreground(colorRed)
+
+	icon := "▸"
+	if expanded {
+		icon = "▾"
+	}
+	summary := toolDisplaySummary(display)
+	lines := []string{
+		"  " + headerStyle.Render(icon+" "+display.Tool) + " " + labelStyle.Render(summary),
+	}
+	if !expanded {
+		return lines
+	}
+	output := strings.TrimRight(display.Output, "\n")
+	if output != "" {
+		for _, line := range strings.Split(bodyStyle.Render(output), "\n") {
+			lines = append(lines, "  "+borderStyle.Render("│")+" "+line)
+		}
+	}
+	if strings.TrimSpace(display.Error) != "" {
+		for _, line := range strings.Split(bodyStyle.Render(display.Error), "\n") {
+			lines = append(lines, "  "+borderStyle.Render("│")+" "+errorStyle.Render(line))
+		}
+	}
+	if output == "" && strings.TrimSpace(display.Error) == "" {
+		lines = append(lines, "  "+borderStyle.Render("│")+" "+labelStyle.Render("empty result"))
+	}
+	return lines
+}
+
+func parseCollapsiblePayload(raw, prefix string) (bool, string) {
+	zero := prefix + ":0:"
+	one := prefix + ":1:"
+	spaced := prefix + ": "
+	switch {
+	case strings.HasPrefix(raw, zero):
+		return false, strings.TrimPrefix(raw, zero)
+	case strings.HasPrefix(raw, one):
+		return true, strings.TrimPrefix(raw, one)
+	case strings.HasPrefix(raw, spaced):
+		return false, strings.TrimPrefix(raw, spaced)
+	}
+	return false, raw
+}
+
+func toolDisplaySummary(display toolDisplay) string {
+	if strings.TrimSpace(display.Error) != "" {
+		return "failed, " + outputSummary(display.Error, 70)
+	}
+	if strings.TrimSpace(display.Output) == "" {
+		return "finished with empty result"
+	}
+	return fmt.Sprintf("finished, %s", outputSummary(display.Output, 70))
+}
+
+func outputSummary(text string, maxLen int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return "no details"
+	}
+	if len(text) <= maxLen {
+		return text
+	}
+	if maxLen <= 3 {
+		return text[:maxLen]
+	}
+	return text[:maxLen-3] + "..."
+}
+
+func renderCommandOutputLine(line string) string {
+	if strings.TrimSpace(stripANSICodes(line)) == "" {
+		return ""
+	}
+	plain := strings.TrimSpace(stripANSICodes(line))
+	lower := strings.ToLower(plain)
+	accent := lipgloss.NewStyle().Foreground(colorSeparator).Render("│")
+	style := lipgloss.NewStyle().Foreground(colorDim)
+
+	switch {
+	case strings.HasPrefix(lower, "setting saved:"):
+		accent = lipgloss.NewStyle().Foreground(colorEmerald).Render("│")
+		style = lipgloss.NewStyle().Foreground(colorEmerald)
+	case strings.HasPrefix(lower, "usage:") || strings.Contains(lower, " usage"):
+		accent = lipgloss.NewStyle().Foreground(colorBlue).Render("│")
+		style = lipgloss.NewStyle().Foreground(colorBlue)
+	case strings.Contains(lower, "requires") || strings.Contains(lower, "warning"):
+		accent = lipgloss.NewStyle().Foreground(colorAmber).Render("│")
+		style = lipgloss.NewStyle().Foreground(colorAmber)
+	case strings.HasPrefix(plain, "✓") || strings.HasPrefix(lower, "saved"):
+		accent = lipgloss.NewStyle().Foreground(colorEmerald).Render("│")
+		style = lipgloss.NewStyle().Foreground(colorEmerald)
+	case strings.HasPrefix(plain, "✗") || strings.HasPrefix(lower, "error"):
+		accent = lipgloss.NewStyle().Foreground(colorRed).Render("│")
+		style = lipgloss.NewStyle().Foreground(colorRed)
+	case strings.HasPrefix(plain, "- ") || strings.HasPrefix(plain, "• "):
+		accent = lipgloss.NewStyle().Foreground(colorBrandDim).Render("│")
+	}
+
+	if strings.Contains(line, "\x1b[") {
+		return "  " + accent + " " + line
+	}
+	return "  " + accent + " " + style.Render(line)
+}
+
+func (m Model) historyPrevious() (tea.Model, tea.Cmd) {
+	if len(m.history) == 0 {
+		return m, nil
+	}
+	if m.historyIdx == len(m.history) {
+		m.tempInput = m.input.Value()
+	}
+	m.historyIdx--
+	if m.historyIdx < 0 {
+		m.historyIdx = 0
+	}
+	m.input.SetValue(m.history[m.historyIdx])
+	m.input.SetCursor(len(m.input.Value()))
+	return m, nil
+}
+
+func (m Model) historyNext() (tea.Model, tea.Cmd) {
+	if len(m.history) == 0 {
+		return m, nil
+	}
+	m.historyIdx++
+	if m.historyIdx > len(m.history) {
+		m.historyIdx = len(m.history)
+	}
+	if m.historyIdx == len(m.history) {
+		m.input.SetValue(m.tempInput)
+	} else {
+		m.input.SetValue(m.history[m.historyIdx])
+	}
+	m.input.SetCursor(len(m.input.Value()))
+	return m, nil
 }
 
 func visibleTail(lines []string, limit int) []string {
@@ -1556,10 +2152,10 @@ func saveEnvFile(dir string, keys map[string]string) error {
 		dir = "."
 	}
 	path := filepath.Join(dir, ".env")
-	
+
 	envMap := make(map[string]string)
 	var lines []string
-	
+
 	if data, err := os.ReadFile(path); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			trimmed := strings.TrimSpace(line)
@@ -1579,11 +2175,11 @@ func saveEnvFile(dir string, keys map[string]string) error {
 			lines = append(lines, key)
 		}
 	}
-	
+
 	for k, v := range keys {
 		quotedVal := fmt.Sprintf("%s=\"%s\"", k, v)
 		envMap[k] = quotedVal
-		
+
 		found := false
 		for _, line := range lines {
 			if line == k {
@@ -1595,7 +2191,7 @@ func saveEnvFile(dir string, keys map[string]string) error {
 			lines = append(lines, k)
 		}
 	}
-	
+
 	var outLines []string
 	for _, line := range lines {
 		if val, exists := envMap[line]; exists {
@@ -1604,6 +2200,6 @@ func saveEnvFile(dir string, keys map[string]string) error {
 			outLines = append(outLines, line)
 		}
 	}
-	
+
 	return os.WriteFile(path, []byte(strings.Join(outLines, "\n")), 0o600)
 }

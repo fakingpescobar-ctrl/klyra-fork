@@ -18,27 +18,30 @@ import (
 )
 
 type Config struct {
-	CWD             string
-	Model           string
-	ModelRoutes     router.ModelRoutes
-	MaxSteps        int
-	MaxMessages     int
-	MaxContext      int
-	MaxInstructions int
-	MaxOutput       int
-	Reasoning       string
-	Store           bool
-	Stream          bool
-	ApprovalMode    string
-	Sandbox         string
-	Mode            string
-	ContextFiles    []string
-	Provider        llm.Provider
-	Tools           *tools.Registry
-	Input           io.Reader
-	Output          io.Writer
-	SystemMessage   string
-	Approver        ApprovalFunc
+	CWD              string
+	Model            string
+	ModelRoutes      router.ModelRoutes
+	MaxSteps         int
+	MaxMessages      int
+	MaxContext       int
+	MaxInstructions  int
+	MaxOutput        int
+	Reasoning        string
+	Store            bool
+	Stream           bool
+	ApprovalMode     string
+	Sandbox          string
+	Mode             string
+	ContextFiles     []string
+	Provider         llm.Provider
+	Tools            *tools.Registry
+	Input            io.Reader
+	Output           io.Writer
+	SystemMessage    string
+	Approver         ApprovalFunc
+	StreamHandler    llm.StreamHandler
+	ReasoningHandler func(string) error
+	ToolProgress     func(ToolProgressEvent) error
 }
 
 type ApprovalFunc func(ApprovalRequest) (bool, error)
@@ -48,6 +51,15 @@ type ApprovalRequest struct {
 	Risk   string
 	Reason string
 	Args   map[string]any
+}
+
+type ToolProgressEvent struct {
+	Phase  string
+	Tool   string
+	ID     string
+	Args   map[string]any
+	Output string
+	Error  string
 }
 
 type Agent struct {
@@ -170,7 +182,7 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 			if final != "" && !streamed {
 				fmt.Fprintf(a.cfg.Output, "\nassistant: %s\n", final)
 			}
-			window.Add(llm.Message{Role: llm.RoleAssistant, Content: final, ToolCalls: resp.ToolCalls})
+			window.Add(llm.Message{Role: llm.RoleAssistant, Content: final, Reasoning: resp.Reasoning, ToolCalls: resp.ToolCalls})
 		}
 
 		if len(resp.ToolCalls) == 0 {
@@ -180,11 +192,20 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 
 		for _, call := range resp.ToolCalls {
 			fmt.Fprintf(a.cfg.Output, "tool: %s\n", call.Name)
+			if err := a.emitToolProgress(ToolProgressEvent{Phase: "queued", Tool: call.Name, ID: call.ID, Args: call.Arguments}); err != nil {
+				return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, err
+			}
 			if err := a.approveToolCall(call); err != nil {
 				observation := toolObservation(call, tools.Result{Output: "tool call rejected by approval policy"}, err)
 				window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: observation})
 				fmt.Fprintf(a.cfg.Output, "tool rejected: %v\n", err)
+				if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: "rejected", Tool: call.Name, ID: call.ID, Args: call.Arguments, Error: err.Error()}); progressErr != nil {
+					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, progressErr
+				}
 				continue
+			}
+			if err := a.emitToolProgress(ToolProgressEvent{Phase: "running", Tool: call.Name, ID: call.ID, Args: call.Arguments}); err != nil {
+				return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, err
 			}
 			result, err := a.cfg.Tools.RunWithPolicy(ctx, a.cfg.CWD, a.cfg.Sandbox, a.cfg.Mode, a.cfg.ContextFiles, call)
 			observation := toolObservation(call, result, err)
@@ -192,9 +213,25 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 			if err != nil {
 				fmt.Fprintf(a.cfg.Output, "tool error: %v\n", err)
 			}
+			phase := "done"
+			errText := ""
+			if err != nil {
+				phase = "error"
+				errText = err.Error()
+			}
+			if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: phase, Tool: call.Name, ID: call.ID, Args: call.Arguments, Output: result.Output, Error: errText}); progressErr != nil {
+				return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, progressErr
+			}
 		}
 	}
 	return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, fmt.Errorf("agent stopped after %d steps", a.cfg.MaxSteps)
+}
+
+func (a *Agent) emitToolProgress(event ToolProgressEvent) error {
+	if a.cfg.ToolProgress == nil {
+		return nil
+	}
+	return a.cfg.ToolProgress(event)
 }
 
 func (a *Agent) contextDebug(specs []llm.ToolSpec) ContextDebug {
@@ -230,12 +267,27 @@ func (a *Agent) complete(ctx context.Context, req llm.Request) (llm.Response, bo
 	}
 
 	streamStarted := false
+	var reasoning strings.Builder
 	resp, err := streamer.Stream(ctx, req, func(event llm.StreamEvent) error {
 		if event.Reasoning != "" {
+			reasoning.WriteString(event.Reasoning)
+			if a.cfg.ReasoningHandler != nil {
+				if err := a.cfg.ReasoningHandler(event.Reasoning); err != nil {
+					return err
+				}
+				return a.emitStreamEvent(event)
+			}
 			fmt.Fprintf(a.cfg.Output, "reasoning: %s", event.Reasoning)
 			return nil
 		}
 		if event.Delta == "" {
+			return a.emitStreamEvent(event)
+		}
+		if err := a.emitStreamEvent(event); err != nil {
+			return err
+		}
+		if a.cfg.StreamHandler != nil {
+			streamStarted = true
 			return nil
 		}
 		if !streamStarted {
@@ -245,10 +297,20 @@ func (a *Agent) complete(ctx context.Context, req llm.Request) (llm.Response, bo
 		fmt.Fprint(a.cfg.Output, event.Delta)
 		return nil
 	})
-	if streamStarted {
+	if streamStarted && a.cfg.StreamHandler == nil {
 		fmt.Fprintln(a.cfg.Output)
 	}
+	if reasoning.Len() > 0 {
+		resp.Reasoning = reasoning.String()
+	}
 	return resp, streamStarted, err
+}
+
+func (a *Agent) emitStreamEvent(event llm.StreamEvent) error {
+	if a.cfg.StreamHandler == nil {
+		return nil
+	}
+	return a.cfg.StreamHandler(event)
 }
 
 func mergeUsage(left, right llm.Usage) llm.Usage {

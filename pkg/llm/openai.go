@@ -1,14 +1,16 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
-	"time"
 )
 
 type OpenAIProvider struct {
@@ -18,16 +20,13 @@ type OpenAIProvider struct {
 }
 
 func NewOpenAIProvider(apiKey, baseURL string) (*OpenAIProvider, error) {
-	if strings.TrimSpace(apiKey) == "" {
-		return nil, fmt.Errorf("OPENAI_API_KEY is required")
-	}
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
 	return &OpenAIProvider{
 		apiKey:  apiKey,
 		baseURL: strings.TrimRight(baseURL, "/"),
-		client:  &http.Client{Timeout: 90 * time.Second},
+		client:  &http.Client{Timeout: 0},
 	}, nil
 }
 
@@ -41,9 +40,11 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 	}
 
 	payload := openAIChatRequest{
-		Model:    req.Model,
-		Messages: openAIMessages(req.Messages),
-		Tools:    openAITools(req.Tools),
+		Model:           req.Model,
+		Messages:        openAIMessages(req.Messages),
+		Tools:           openAITools(req.Tools),
+		MaxTokens:       req.MaxOutputTokens,
+		ReasoningEffort: req.ReasoningEffort,
 	}
 	if len(payload.Tools) > 0 {
 		payload.ToolChoice = "auto"
@@ -58,7 +59,9 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 	if err != nil {
 		return Response{}, err
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	if strings.TrimSpace(p.apiKey) != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	httpResp, err := p.client.Do(httpReq)
@@ -93,6 +96,54 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 	}, nil
 }
 
+func (p *OpenAIProvider) Stream(ctx context.Context, req Request, handler StreamHandler) (Response, error) {
+	if strings.TrimSpace(req.Model) == "" {
+		return Response{}, fmt.Errorf("model is required")
+	}
+
+	payload := openAIChatRequest{
+		Model:           req.Model,
+		Messages:        openAIMessages(req.Messages),
+		Tools:           openAITools(req.Tools),
+		MaxTokens:       req.MaxOutputTokens,
+		ReasoningEffort: req.ReasoningEffort,
+		Stream:          true,
+		StreamOptions:   &openAIStreamOptions{IncludeUsage: true},
+	}
+	if len(payload.Tools) > 0 {
+		payload.ToolChoice = "auto"
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return Response{}, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return Response{}, err
+	}
+	if strings.TrimSpace(p.apiKey) != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	httpResp, err := p.client.Do(httpReq)
+	if err != nil {
+		return Response{}, err
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode < 200 || httpResp.StatusCode > 299 {
+		var apiErr map[string]any
+		_ = json.NewDecoder(httpResp.Body).Decode(&apiErr)
+		return Response{}, fmt.Errorf("openai-compatible API returned %s: %v", httpResp.Status, apiErr)
+	}
+
+	return readOpenAIChatStream(httpResp.Body, handler)
+}
+
 func openAIContentString(content any) string {
 	switch value := content.(type) {
 	case string:
@@ -115,10 +166,18 @@ func openAIContentString(content any) string {
 }
 
 type openAIChatRequest struct {
-	Model      string          `json:"model"`
-	Messages   []openAIMessage `json:"messages"`
-	Tools      []openAITool    `json:"tools,omitempty"`
-	ToolChoice string          `json:"tool_choice,omitempty"`
+	Model           string               `json:"model"`
+	Messages        []openAIMessage      `json:"messages"`
+	Tools           []openAITool         `json:"tools,omitempty"`
+	ToolChoice      string               `json:"tool_choice,omitempty"`
+	MaxTokens       int                  `json:"max_tokens,omitempty"`
+	ReasoningEffort string               `json:"reasoning_effort,omitempty"`
+	Stream          bool                 `json:"stream,omitempty"`
+	StreamOptions   *openAIStreamOptions `json:"stream_options,omitempty"`
+}
+
+type openAIStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type openAIMessage struct {
@@ -165,6 +224,33 @@ type openAIChatResponse struct {
 		Message openAIMessage `json:"message"`
 	} `json:"choices"`
 	Usage openAIUsage `json:"usage"`
+}
+
+type openAIChatStreamChunk struct {
+	Choices []struct {
+		Delta        openAIStreamDelta `json:"delta"`
+		FinishReason string            `json:"finish_reason"`
+	} `json:"choices"`
+	Usage openAIUsage `json:"usage"`
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error"`
+}
+
+type openAIStreamDelta struct {
+	Content          any                    `json:"content"`
+	Reasoning        string                 `json:"reasoning"`
+	ReasoningContent string                 `json:"reasoning_content"`
+	Thinking         string                 `json:"thinking"`
+	ToolCalls        []openAIStreamToolCall `json:"tool_calls"`
+}
+
+type openAIStreamToolCall struct {
+	Index    int                `json:"index"`
+	ID       string             `json:"id"`
+	Type     string             `json:"type"`
+	Function openAICallFunction `json:"function"`
 }
 
 type openAIUsage struct {
@@ -264,4 +350,223 @@ func parseOpenAIToolCalls(calls []openAIToolCall) []ToolCall {
 		})
 	}
 	return out
+}
+
+func readOpenAIChatStream(reader io.Reader, handler StreamHandler) (Response, error) {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	var content strings.Builder
+	var usage Usage
+	inThinkBlock := false
+	pendingContent := ""
+	toolCalls := map[int]*openAIStreamToolCall{}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var chunk openAIChatStreamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return Response{}, err
+		}
+		if chunk.Error != nil {
+			return Response{}, fmt.Errorf("openai-compatible stream error: %s", chunk.Error.Message)
+		}
+		if chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
+			usage = Usage{
+				InputTokens:     chunk.Usage.PromptTokens,
+				OutputTokens:    chunk.Usage.CompletionTokens,
+				ReasoningTokens: chunk.Usage.CompletionTokensDetails.ReasoningTokens,
+				TotalTokens:     chunk.Usage.TotalTokens,
+			}
+		}
+		for _, choice := range chunk.Choices {
+			delta := choice.Delta
+			if reasoning := firstNonEmpty(delta.ReasoningContent, delta.Reasoning, delta.Thinking); reasoning != "" && handler != nil {
+				if err := handler(StreamEvent{Reasoning: reasoning}); err != nil {
+					return Response{}, err
+				}
+			}
+			if text := openAIContentString(delta.Content); text != "" {
+				if err := routeOpenAIContentDelta(text, &inThinkBlock, &pendingContent, &content, handler); err != nil {
+					return Response{}, err
+				}
+			}
+			if err := emitOpenAIStreamToolCallDeltas(delta.ToolCalls, handler); err != nil {
+				return Response{}, err
+			}
+			accumulateOpenAIStreamToolCalls(toolCalls, delta.ToolCalls)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return Response{}, err
+	}
+	if pendingContent != "" {
+		if inThinkBlock {
+			if err := emitOpenAIReasoningDelta(pendingContent, handler); err != nil {
+				return Response{}, err
+			}
+		} else {
+			content.WriteString(pendingContent)
+			if err := emitOpenAITextDelta(pendingContent, handler); err != nil {
+				return Response{}, err
+			}
+		}
+	}
+	return Response{
+		Content:   content.String(),
+		ToolCalls: finishOpenAIStreamToolCalls(toolCalls),
+		Usage:     usage,
+	}, nil
+}
+
+func routeOpenAIContentDelta(text string, inThinkBlock *bool, pending *string, content *strings.Builder, handler StreamHandler) error {
+	const openTag = "<think>"
+	const closeTag = "</think>"
+
+	input := *pending + text
+	*pending = ""
+	for input != "" {
+		if *inThinkBlock {
+			idx := strings.Index(input, closeTag)
+			if idx < 0 {
+				keep := suffixPrefixLen(input, closeTag)
+				reasoning := input[:len(input)-keep]
+				if err := emitOpenAIReasoningDelta(reasoning, handler); err != nil {
+					return err
+				}
+				*pending = input[len(input)-keep:]
+				return nil
+			}
+			if err := emitOpenAIReasoningDelta(input[:idx], handler); err != nil {
+				return err
+			}
+			input = input[idx+len(closeTag):]
+			*inThinkBlock = false
+			continue
+		}
+
+		idx := strings.Index(input, openTag)
+		if idx < 0 {
+			keep := suffixPrefixLen(input, openTag)
+			output := input[:len(input)-keep]
+			content.WriteString(output)
+			if err := emitOpenAITextDelta(output, handler); err != nil {
+				return err
+			}
+			*pending = input[len(input)-keep:]
+			return nil
+		}
+		output := input[:idx]
+		content.WriteString(output)
+		if err := emitOpenAITextDelta(output, handler); err != nil {
+			return err
+		}
+		input = input[idx+len(openTag):]
+		*inThinkBlock = true
+	}
+	return nil
+}
+
+func emitOpenAITextDelta(text string, handler StreamHandler) error {
+	if text == "" || handler == nil {
+		return nil
+	}
+	return handler(StreamEvent{Delta: text})
+}
+
+func emitOpenAIReasoningDelta(text string, handler StreamHandler) error {
+	if text == "" || handler == nil {
+		return nil
+	}
+	return handler(StreamEvent{Reasoning: text})
+}
+
+func emitOpenAIStreamToolCallDeltas(deltas []openAIStreamToolCall, handler StreamHandler) error {
+	if handler == nil {
+		return nil
+	}
+	for _, delta := range deltas {
+		if delta.ID == "" && delta.Function.Name == "" && delta.Function.Arguments == "" {
+			continue
+		}
+		if err := handler(StreamEvent{
+			ToolCallID:         delta.ID,
+			ToolName:           delta.Function.Name,
+			ToolArgumentsDelta: delta.Function.Arguments,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func suffixPrefixLen(text, marker string) int {
+	maxLen := len(marker) - 1
+	if len(text) < maxLen {
+		maxLen = len(text)
+	}
+	for n := maxLen; n > 0; n-- {
+		if strings.HasSuffix(text, marker[:n]) {
+			return n
+		}
+	}
+	return 0
+}
+
+func accumulateOpenAIStreamToolCalls(acc map[int]*openAIStreamToolCall, deltas []openAIStreamToolCall) {
+	for _, delta := range deltas {
+		call := acc[delta.Index]
+		if call == nil {
+			call = &openAIStreamToolCall{Index: delta.Index}
+			acc[delta.Index] = call
+		}
+		if delta.ID != "" {
+			call.ID = delta.ID
+		}
+		if delta.Type != "" {
+			call.Type = delta.Type
+		}
+		if delta.Function.Name != "" {
+			call.Function.Name = delta.Function.Name
+		}
+		if delta.Function.Arguments != "" {
+			call.Function.Arguments += delta.Function.Arguments
+		}
+	}
+}
+
+func finishOpenAIStreamToolCalls(acc map[int]*openAIStreamToolCall) []ToolCall {
+	if len(acc) == 0 {
+		return nil
+	}
+	indexes := make([]int, 0, len(acc))
+	for index := range acc {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	calls := make([]openAIToolCall, 0, len(indexes))
+	for _, index := range indexes {
+		call := acc[index]
+		calls = append(calls, openAIToolCall{
+			ID:       call.ID,
+			Type:     firstNonEmpty(call.Type, "function"),
+			Function: call.Function,
+		})
+	}
+	return parseOpenAIToolCalls(calls)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

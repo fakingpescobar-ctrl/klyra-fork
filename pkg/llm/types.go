@@ -14,6 +14,7 @@ const (
 type Message struct {
 	Role        Role         `json:"role"`
 	Content     string       `json:"content"`
+	Reasoning   string       `json:"reasoning,omitempty"`
 	Attachments []Attachment `json:"attachments,omitempty"`
 	ToolCallID  string       `json:"tool_call_id,omitempty"`
 	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
@@ -51,6 +52,7 @@ type Request struct {
 
 type Response struct {
 	Content   string
+	Reasoning string
 	ToolCalls []ToolCall
 	Usage     Usage
 	ID        string
@@ -69,8 +71,11 @@ type Provider interface {
 }
 
 type StreamEvent struct {
-	Delta     string
-	Reasoning string
+	Delta              string
+	Reasoning          string
+	ToolCallID         string
+	ToolName           string
+	ToolArgumentsDelta string
 }
 
 type StreamHandler func(StreamEvent) error

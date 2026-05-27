@@ -211,6 +211,80 @@ func TestAgentStreamsProviderOutput(t *testing.T) {
 	}
 }
 
+func TestAgentRoutesStreamAndReasoningHandlers(t *testing.T) {
+	provider := &streamedProvider{
+		response:  llm.Response{Content: "hello"},
+		deltas:    []string{"he", "llo"},
+		reasoning: []string{"thinking"},
+	}
+	var output bytes.Buffer
+	var streamed strings.Builder
+	var reasoning strings.Builder
+	agent, err := New(Config{
+		CWD:      t.TempDir(),
+		Provider: provider,
+		Stream:   true,
+		Output:   &output,
+		StreamHandler: func(event llm.StreamEvent) error {
+			streamed.WriteString(event.Delta)
+			return nil
+		},
+		ReasoningHandler: func(text string) error {
+			reasoning.WriteString(text)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := agent.Run(context.Background(), "say hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final != "hello" {
+		t.Fatalf("unexpected final response: %q", final)
+	}
+	if streamed.String() != "hello" {
+		t.Fatalf("expected handler stream, got %q", streamed.String())
+	}
+	if reasoning.String() != "thinking" {
+		t.Fatalf("expected reasoning handler stream, got %q", reasoning.String())
+	}
+	if strings.Contains(output.String(), "assistant:") || strings.Contains(output.String(), "reasoning:") {
+		t.Fatalf("handler output leaked into writer: %q", output.String())
+	}
+}
+
+func TestAgentStoresStreamedReasoningOnAssistantMessage(t *testing.T) {
+	provider := &streamedProvider{
+		response:  llm.Response{Content: "hello"},
+		deltas:    []string{"hello"},
+		reasoning: []string{"plan\n\n- inspect"},
+	}
+	agent, err := New(Config{
+		CWD:      t.TempDir(),
+		Provider: provider,
+		Stream:   true,
+		Output:   io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.RunConversation(context.Background(), nil, "say hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found llm.Message
+	for _, message := range result.Messages {
+		if message.Role == llm.RoleAssistant {
+			found = message
+		}
+	}
+	if found.Reasoning != "plan\n\n- inspect" {
+		t.Fatalf("expected stored reasoning, got %#v", found)
+	}
+}
+
 func TestAgentRejectsApprovalRequiredTool(t *testing.T) {
 	provider := &scriptedProvider{
 		responses: []llm.Response{
@@ -388,8 +462,9 @@ type scriptedProvider struct {
 }
 
 type streamedProvider struct {
-	response llm.Response
-	deltas   []string
+	response  llm.Response
+	deltas    []string
+	reasoning []string
 }
 
 func (p *streamedProvider) Complete(_ context.Context, _ llm.Request) (llm.Response, error) {
@@ -397,6 +472,11 @@ func (p *streamedProvider) Complete(_ context.Context, _ llm.Request) (llm.Respo
 }
 
 func (p *streamedProvider) Stream(_ context.Context, _ llm.Request, handler llm.StreamHandler) (llm.Response, error) {
+	for _, reasoning := range p.reasoning {
+		if err := handler(llm.StreamEvent{Reasoning: reasoning}); err != nil {
+			return llm.Response{}, err
+		}
+	}
 	for _, delta := range p.deltas {
 		if err := handler(llm.StreamEvent{Delta: delta}); err != nil {
 			return llm.Response{}, err
