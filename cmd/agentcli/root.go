@@ -536,7 +536,20 @@ func newTUICommand(opts *options) *cobra.Command {
 					cancel()
 				}()
 
+				startTime := time.Now()
 				result, err := runnerWithOutput.RunConversationWithAttachments(runCtx, saved.Messages, input, attachments)
+				elapsed := time.Since(startTime)
+
+				// Attach duration and usage to the last assistant message in result.Messages
+				for i := len(result.Messages) - 1; i >= 0; i-- {
+					if result.Messages[i].Role == llm.RoleAssistant {
+						result.Messages[i].DurationSeconds = elapsed.Seconds()
+						u := result.Usage
+						result.Messages[i].Usage = &u
+						break
+					}
+				}
+
 				saved.Messages = result.Messages
 				if saveErr := store.Save(saved); saveErr != nil {
 					return "", saveErr
@@ -734,6 +747,19 @@ func tuiLinesFromMessages(messages []llm.Message) []string {
 				lines = append(lines, "thoughts:0:"+message.Reasoning)
 			}
 			lines = append(lines, "agent: "+content)
+			if message.DurationSeconds > 0 || (message.Usage != nil && message.Usage.TotalTokens > 0) {
+				statsLine := fmt.Sprintf("stats: duration=%.1fs", message.DurationSeconds)
+				if message.Usage != nil {
+					statsLine += fmt.Sprintf(" input=%d cached=%d output=%d reasoning=%d total=%d",
+						message.Usage.InputTokens,
+						message.Usage.CachedTokens,
+						message.Usage.OutputTokens,
+						message.Usage.ReasoningTokens,
+						message.Usage.TotalTokens,
+					)
+				}
+				lines = append(lines, statsLine)
+			}
 		case llm.RoleTool:
 			lines = append(lines, "tool:0:"+content)
 		}

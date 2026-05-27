@@ -36,3 +36,25 @@ func TestServiceMarkdownAvoidsUnsupportedHeaders(t *testing.T) {
 		}
 	}
 }
+
+func TestTUILinesFromMessagesRestoresStats(t *testing.T) {
+	lines := tuiLinesFromMessages([]llm.Message{
+		{Role: llm.RoleUser, Content: "hello"},
+		{
+			Role:            llm.RoleAssistant,
+			Content:         "done",
+			DurationSeconds: 2.5,
+			Usage: &llm.Usage{
+				InputTokens:     1000,
+				CachedTokens:    200,
+				OutputTokens:    150,
+				ReasoningTokens: 50,
+				TotalTokens:     1150,
+			},
+		},
+	})
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "stats: duration=2.5s input=1000 cached=200 output=150 reasoning=50 total=1150") {
+		t.Fatalf("stored stats were not restored properly: %#v", lines)
+	}
+}
