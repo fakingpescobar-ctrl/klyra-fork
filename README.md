@@ -1,4 +1,4 @@
-# Agent CLI
+# Klyra
 
 Agentic coding CLI prototype in Go.
 
