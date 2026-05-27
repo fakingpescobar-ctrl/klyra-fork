@@ -78,8 +78,8 @@ func TestOpenAIProviderTreatsPrivateIPEndpointsAsLocal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !provider.omitStreamOptions || provider.transport.retry.MaxAttempts != 3 {
-		t.Fatalf("expected private IP endpoint to use local compatibility settings: %+v", provider)
+	if provider.transport.retry.MaxAttempts != 3 {
+		t.Fatalf("expected private IP endpoint to use local retry settings: MaxAttempts=%d", provider.transport.retry.MaxAttempts)
 	}
 }
 
@@ -217,7 +217,7 @@ func TestOpenAIProviderStreamsDeltasReasoningAndUsage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider, err := NewOpenAIProvider("", server.URL+"?test-stream-options=true")
+	provider, err := NewOpenAIProvider("", server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,5 +329,72 @@ func TestOpenAIProviderRoutesThinkTagsToReasoning(t *testing.T) {
 	}
 	if reasoning.String() != "hidden thoughts" {
 		t.Fatalf("unexpected think-tag reasoning: %q", reasoning.String())
+	}
+}
+
+func TestOpenAIProviderEstimatesUsageWhenServerOmitsIt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Server returns no usage data at all (like old ollama)
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"hello world"}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAIProvider("", server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := provider.Stream(context.Background(), Request{
+		Model:    "local-model",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	}, func(event StreamEvent) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != "hello world" {
+		t.Fatalf("unexpected content: %q", resp.Content)
+	}
+	// "hello world" = 11 chars -> (11+3)/4 = 3 estimated tokens
+	if resp.Usage.OutputTokens != 3 || resp.Usage.TotalTokens != 3 {
+		t.Fatalf("expected estimated usage output=3 total=3, got output=%d total=%d",
+			resp.Usage.OutputTokens, resp.Usage.TotalTokens)
+	}
+}
+
+func TestOpenAIProviderEstimatesUsageForCompleteWhenServerOmitsIt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Response with zero usage
+		_, _ = w.Write([]byte(`{
+			"choices": [{
+				"message": {
+					"role": "assistant",
+					"content": "this is a test response"
+				}
+			}],
+			"usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAIProvider("", server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := provider.Complete(context.Background(), Request{
+		Model:    "local-model",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != "this is a test response" {
+		t.Fatalf("unexpected content: %q", resp.Content)
+	}
+	// "this is a test response" = 23 chars -> (23+3)/4 = 6 estimated tokens
+	if resp.Usage.OutputTokens != 6 || resp.Usage.TotalTokens != 6 {
+		t.Fatalf("expected estimated usage output=6 total=6, got output=%d total=%d",
+			resp.Usage.OutputTokens, resp.Usage.TotalTokens)
 	}
 }

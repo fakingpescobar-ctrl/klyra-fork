@@ -437,7 +437,7 @@ func (a *Agent) approveToolCall(call llm.ToolCall) error {
 }
 
 func (a *Agent) printUsage(usage llm.Usage) {
-	if usage.TotalTokens == 0 {
+	if usage.TotalTokens == 0 && usage.InputTokens == 0 && usage.OutputTokens == 0 {
 		return
 	}
 	fmt.Fprintf(a.cfg.Output, "usage: input=%d cached=%d output=%d reasoning=%d total=%d\n",

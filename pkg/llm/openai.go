@@ -12,19 +12,17 @@ import (
 )
 
 type OpenAIProvider struct {
-	transport         openAIChatTransport
-	omitStreamOptions bool
+	transport openAIChatTransport
 }
 
 func NewOpenAIProvider(apiKey, baseURL string) (*OpenAIProvider, error) {
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
-	isLocal := isLocalOpenAICompatibleBaseURL(baseURL) && !strings.Contains(strings.ToLower(baseURL), "test-stream-options")
+	isLocal := isLocalOpenAICompatibleBaseURL(baseURL)
 
 	return &OpenAIProvider{
-		transport:         newOpenAIChatTransport(apiKey, baseURL, isLocal),
-		omitStreamOptions: isLocal,
+		transport: newOpenAIChatTransport(apiKey, baseURL, isLocal),
 	}, nil
 }
 
@@ -73,27 +71,28 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 		return Response{}, fmt.Errorf("openai-compatible API returned no choices")
 	}
 	message := decoded.Choices[0].Message
+	contentStr := openAIContentString(message.Content)
+	parsedCalls := parseOpenAIToolCalls(message.ToolCalls)
+	usage := Usage{
+		InputTokens:     decoded.Usage.PromptTokens,
+		CachedTokens:    decoded.Usage.PromptTokensDetails.CachedTokens,
+		OutputTokens:    decoded.Usage.CompletionTokens,
+		ReasoningTokens: decoded.Usage.CompletionTokensDetails.ReasoningTokens,
+		TotalTokens:     decoded.Usage.TotalTokens,
+	}
+	if usage.TotalTokens == 0 && usage.InputTokens == 0 && usage.OutputTokens == 0 {
+		usage = estimateOpenAIStreamUsage(contentStr, parsedCalls)
+	}
 	return Response{
-		Content:   openAIContentString(message.Content),
-		ToolCalls: parseOpenAIToolCalls(message.ToolCalls),
-		Usage: Usage{
-			InputTokens:     decoded.Usage.PromptTokens,
-			CachedTokens:    decoded.Usage.PromptTokensDetails.CachedTokens,
-			OutputTokens:    decoded.Usage.CompletionTokens,
-			ReasoningTokens: decoded.Usage.CompletionTokensDetails.ReasoningTokens,
-			TotalTokens:     decoded.Usage.TotalTokens,
-		},
+		Content:   contentStr,
+		ToolCalls: parsedCalls,
+		Usage:     usage,
 	}, nil
 }
 
 func (p *OpenAIProvider) Stream(ctx context.Context, req Request, handler StreamHandler) (Response, error) {
 	if strings.TrimSpace(req.Model) == "" {
 		return Response{}, fmt.Errorf("model is required")
-	}
-
-	var streamOptions *openAIStreamOptions
-	if !p.omitStreamOptions {
-		streamOptions = &openAIStreamOptions{IncludeUsage: true}
 	}
 
 	payload := openAIChatRequest{
@@ -103,7 +102,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request, handler Stream
 		MaxTokens:       req.MaxOutputTokens,
 		ReasoningEffort: req.ReasoningEffort,
 		Stream:          true,
-		StreamOptions:   streamOptions,
+		StreamOptions:   &openAIStreamOptions{IncludeUsage: true},
 	}
 	if len(payload.Tools) > 0 {
 		payload.ToolChoice = "auto"
@@ -449,16 +448,25 @@ func readOpenAIChatStream(reader io.Reader, handler StreamHandler) (Response, er
 	}
 	if err := scanner.Err(); err != nil {
 		if content.Len() > 0 || len(toolCalls) > 0 {
+			errContent := content.String()
+			errCalls := finishOpenAIStreamToolCalls(toolCalls)
+			if usage.TotalTokens == 0 && usage.InputTokens == 0 && usage.OutputTokens == 0 {
+				usage = estimateOpenAIStreamUsage(errContent, errCalls)
+			}
 			return Response{
-				Content:   content.String(),
-				ToolCalls: finishOpenAIStreamToolCalls(toolCalls),
+				Content:   errContent,
+				ToolCalls: errCalls,
 				Usage:     usage,
 			}, nil
 		}
 		return Response{}, err
 	}
+	finalContent := content.String()
+	if usage.TotalTokens == 0 && usage.InputTokens == 0 && usage.OutputTokens == 0 {
+		usage = estimateOpenAIStreamUsage(finalContent, finishOpenAIStreamToolCalls(toolCalls))
+	}
 	return Response{
-		Content:   content.String(),
+		Content:   finalContent,
 		ToolCalls: finishOpenAIStreamToolCalls(toolCalls),
 		Usage:     usage,
 	}, nil
@@ -609,4 +617,25 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// estimateOpenAIStreamUsage provides a rough token estimate when the server
+// does not return usage data (e.g. older local OpenAI-compatible servers).
+// It uses the ~4 chars per token heuristic which is reasonable for English.
+func estimateOpenAIStreamUsage(content string, toolCalls []ToolCall) Usage {
+	outputLen := len(content)
+	for _, call := range toolCalls {
+		outputLen += len(call.Name)
+		if args, err := json.Marshal(call.Arguments); err == nil {
+			outputLen += len(args)
+		}
+	}
+	if outputLen == 0 {
+		return Usage{}
+	}
+	outputTokens := (outputLen + 3) / 4 // round up
+	return Usage{
+		OutputTokens: outputTokens,
+		TotalTokens:  outputTokens,
+	}
 }
