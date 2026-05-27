@@ -140,7 +140,13 @@ type Config struct {
 	ContextCockpitInject   bool
 	ContextCockpitTokens   int
 	ContextCockpitMaxFiles int
+	ContextCockpitMaxCards int
 	ContextCockpitDiff     bool
+	ContextRetrieval       bool
+	ContextRetrievalTokens int
+	ContextRetrievalChunks int
+	ContextEmbeddings      bool
+	ContextReranker        bool
 	ContextRecipes         bool
 	NegativeContext        bool
 	Skills                 bool
@@ -190,7 +196,13 @@ type Model struct {
 	contextCockpitInject   bool
 	contextCockpitTokens   int
 	contextCockpitMaxFiles int
+	contextCockpitMaxCards int
 	contextCockpitDiff     bool
+	contextRetrieval       bool
+	contextRetrievalTokens int
+	contextRetrievalChunks int
+	contextEmbeddings      bool
+	contextReranker        bool
 	contextRecipes         bool
 	negativeContext        bool
 	skills                 bool
@@ -308,7 +320,13 @@ func New(cfg Config) Model {
 		contextCockpitInject:   cfg.ContextCockpitInject,
 		contextCockpitTokens:   cfg.ContextCockpitTokens,
 		contextCockpitMaxFiles: cfg.ContextCockpitMaxFiles,
+		contextCockpitMaxCards: cfg.ContextCockpitMaxCards,
 		contextCockpitDiff:     cfg.ContextCockpitDiff,
+		contextRetrieval:       cfg.ContextRetrieval,
+		contextRetrievalTokens: cfg.ContextRetrievalTokens,
+		contextRetrievalChunks: cfg.ContextRetrievalChunks,
+		contextEmbeddings:      cfg.ContextEmbeddings,
+		contextReranker:        cfg.ContextReranker,
 		contextRecipes:         cfg.ContextRecipes,
 		negativeContext:        cfg.NegativeContext,
 		skills:                 cfg.Skills,
@@ -1576,7 +1594,8 @@ func (m *Model) openSettingsModal() {
 		m.baseURLs,
 		m.maxContext, m.maxOutput, m.maxSteps, m.maxMessages, m.maxInstructions,
 		m.contextCockpit, m.contextCockpitInject,
-		m.contextCockpitTokens, m.contextCockpitMaxFiles, m.contextCockpitDiff,
+		m.contextCockpitTokens, m.contextCockpitMaxFiles, m.contextCockpitMaxCards, m.contextCockpitDiff,
+		m.contextRetrieval, m.contextRetrievalTokens, m.contextRetrievalChunks, m.contextEmbeddings, m.contextReranker,
 		m.contextRecipes, m.negativeContext, m.skills,
 		m.fastModel, m.editModel, m.deepModel,
 	)
@@ -1810,7 +1829,19 @@ func (m Model) updateSettingsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if parsed := parsePositiveInt(sm.GetValue("context_cockpit_files")); parsed > 0 {
 			m.contextCockpitMaxFiles = parsed
 		}
+		if parsed := parsePositiveInt(sm.GetValue("context_cockpit_cards")); parsed > 0 {
+			m.contextCockpitMaxCards = parsed
+		}
 		m.contextCockpitDiff = sm.GetValue("context_cockpit_diff") != "off"
+		m.contextRetrieval = sm.GetValue("context_retrieval") != "off"
+		if parsed := parsePositiveInt(sm.GetValue("context_retrieval_tokens")); parsed > 0 {
+			m.contextRetrievalTokens = parsed
+		}
+		if parsed := parsePositiveInt(sm.GetValue("context_retrieval_chunks")); parsed > 0 {
+			m.contextRetrievalChunks = parsed
+		}
+		m.contextEmbeddings = sm.GetValue("context_embeddings") != "off"
+		m.contextReranker = sm.GetValue("context_reranker") != "off"
 		m.contextRecipes = sm.GetValue("context_recipes") != "off"
 		m.negativeContext = sm.GetValue("negative_context") != "off"
 		m.skills = sm.GetValue("skills") != "off"
@@ -1845,7 +1876,13 @@ func (m Model) updateSettingsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			"context_cockpit_inject="+onOff(m.contextCockpitInject),
 			fmt.Sprintf("context_cockpit_tokens=%d", m.contextCockpitTokens),
 			fmt.Sprintf("context_cockpit_files=%d", m.contextCockpitMaxFiles),
+			fmt.Sprintf("context_cockpit_cards=%d", m.contextCockpitMaxCards),
 			"context_cockpit_diff="+onOff(m.contextCockpitDiff),
+			"context_retrieval="+onOff(m.contextRetrieval),
+			fmt.Sprintf("context_retrieval_tokens=%d", m.contextRetrievalTokens),
+			fmt.Sprintf("context_retrieval_chunks=%d", m.contextRetrievalChunks),
+			"context_embeddings="+onOff(m.contextEmbeddings),
+			"context_reranker="+onOff(m.contextReranker),
 			"context_recipes="+onOff(m.contextRecipes),
 			"negative_context="+onOff(m.negativeContext),
 			"skills="+onOff(m.skills),
@@ -2192,8 +2229,26 @@ func (m *Model) applyOptimisticCommand(value string) {
 				if parsed := parsePositiveInt(value); parsed > 0 {
 					m.contextCockpitMaxFiles = parsed
 				}
+			case "context_cockpit_cards":
+				if parsed := parsePositiveInt(value); parsed > 0 {
+					m.contextCockpitMaxCards = parsed
+				}
 			case "context_cockpit_diff":
 				m.contextCockpitDiff = value != "off"
+			case "context_retrieval":
+				m.contextRetrieval = value != "off"
+			case "context_retrieval_tokens":
+				if parsed := parsePositiveInt(value); parsed > 0 {
+					m.contextRetrievalTokens = parsed
+				}
+			case "context_retrieval_chunks":
+				if parsed := parsePositiveInt(value); parsed > 0 {
+					m.contextRetrievalChunks = parsed
+				}
+			case "context_embeddings":
+				m.contextEmbeddings = value != "off"
+			case "context_reranker":
+				m.contextReranker = value != "off"
 			case "context_recipes":
 				m.contextRecipes = value != "off"
 			case "negative_context":

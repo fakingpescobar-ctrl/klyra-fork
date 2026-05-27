@@ -28,7 +28,13 @@ type Config struct {
 	ContextCockpitInject   bool                 `json:"context_cockpit_inject"`
 	ContextCockpitTokens   int                  `json:"context_cockpit_tokens"`
 	ContextCockpitMaxFiles int                  `json:"context_cockpit_max_files"`
+	ContextCockpitMaxCards int                  `json:"context_cockpit_max_cards"`
 	ContextCockpitDiff     bool                 `json:"context_cockpit_diff"`
+	ContextRetrieval       bool                 `json:"context_retrieval"`
+	ContextRetrievalTokens int                  `json:"context_retrieval_tokens"`
+	ContextRetrievalChunks int                  `json:"context_retrieval_chunks"`
+	ContextEmbeddings      bool                 `json:"context_embeddings"`
+	ContextReranker        bool                 `json:"context_reranker"`
 	ContextRecipes         bool                 `json:"context_recipes"`
 	NegativeContext        bool                 `json:"negative_context"`
 	Skills                 bool                 `json:"skills"`
@@ -64,7 +70,13 @@ type Profile struct {
 	ContextCockpitInject   *bool                `json:"context_cockpit_inject,omitempty"`
 	ContextCockpitTokens   int                  `json:"context_cockpit_tokens,omitempty"`
 	ContextCockpitMaxFiles int                  `json:"context_cockpit_max_files,omitempty"`
+	ContextCockpitMaxCards int                  `json:"context_cockpit_max_cards,omitempty"`
 	ContextCockpitDiff     *bool                `json:"context_cockpit_diff,omitempty"`
+	ContextRetrieval       *bool                `json:"context_retrieval,omitempty"`
+	ContextRetrievalTokens int                  `json:"context_retrieval_tokens,omitempty"`
+	ContextRetrievalChunks int                  `json:"context_retrieval_chunks,omitempty"`
+	ContextEmbeddings      *bool                `json:"context_embeddings,omitempty"`
+	ContextReranker        *bool                `json:"context_reranker,omitempty"`
 	ContextRecipes         *bool                `json:"context_recipes,omitempty"`
 	NegativeContext        *bool                `json:"negative_context,omitempty"`
 	Skills                 *bool                `json:"skills,omitempty"`
@@ -91,7 +103,13 @@ func Default() Config {
 		ContextCockpitInject:   true,
 		ContextCockpitTokens:   1200,
 		ContextCockpitMaxFiles: 60,
+		ContextCockpitMaxCards: 10,
 		ContextCockpitDiff:     true,
+		ContextRetrieval:       true,
+		ContextRetrievalTokens: 1000,
+		ContextRetrievalChunks: 10,
+		ContextEmbeddings:      false,
+		ContextReranker:        false,
 		ContextRecipes:         true,
 		NegativeContext:        true,
 		Skills:                 true,
@@ -176,6 +194,15 @@ func Load(path string) (Config, error) {
 	}
 	if !strings.Contains(raw, `"context_cockpit_diff"`) {
 		cfg.ContextCockpitDiff = defaults.ContextCockpitDiff
+	}
+	if !strings.Contains(raw, `"context_retrieval"`) {
+		cfg.ContextRetrieval = defaults.ContextRetrieval
+	}
+	if !strings.Contains(raw, `"context_embeddings"`) {
+		cfg.ContextEmbeddings = defaults.ContextEmbeddings
+	}
+	if !strings.Contains(raw, `"context_reranker"`) {
+		cfg.ContextReranker = defaults.ContextReranker
 	}
 	if !strings.Contains(raw, `"context_recipes"`) {
 		cfg.ContextRecipes = defaults.ContextRecipes
@@ -299,8 +326,26 @@ func (c Config) WithProfile(name string) (Config, error) {
 	if profile.ContextCockpitMaxFiles > 0 {
 		c.ContextCockpitMaxFiles = profile.ContextCockpitMaxFiles
 	}
+	if profile.ContextCockpitMaxCards > 0 {
+		c.ContextCockpitMaxCards = profile.ContextCockpitMaxCards
+	}
 	if profile.ContextCockpitDiff != nil {
 		c.ContextCockpitDiff = *profile.ContextCockpitDiff
+	}
+	if profile.ContextRetrieval != nil {
+		c.ContextRetrieval = *profile.ContextRetrieval
+	}
+	if profile.ContextRetrievalTokens > 0 {
+		c.ContextRetrievalTokens = profile.ContextRetrievalTokens
+	}
+	if profile.ContextRetrievalChunks > 0 {
+		c.ContextRetrievalChunks = profile.ContextRetrievalChunks
+	}
+	if profile.ContextEmbeddings != nil {
+		c.ContextEmbeddings = *profile.ContextEmbeddings
+	}
+	if profile.ContextReranker != nil {
+		c.ContextReranker = *profile.ContextReranker
 	}
 	if profile.ContextRecipes != nil {
 		c.ContextRecipes = *profile.ContextRecipes
@@ -371,5 +416,14 @@ func (c *Config) applyDefaults() {
 	}
 	if c.ContextCockpitMaxFiles <= 0 {
 		c.ContextCockpitMaxFiles = defaults.ContextCockpitMaxFiles
+	}
+	if c.ContextCockpitMaxCards <= 0 {
+		c.ContextCockpitMaxCards = defaults.ContextCockpitMaxCards
+	}
+	if c.ContextRetrievalTokens <= 0 {
+		c.ContextRetrievalTokens = defaults.ContextRetrievalTokens
+	}
+	if c.ContextRetrievalChunks <= 0 {
+		c.ContextRetrievalChunks = defaults.ContextRetrievalChunks
 	}
 }

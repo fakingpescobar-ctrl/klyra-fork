@@ -47,8 +47,11 @@ func TestLoadMissingReturnsDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Provider != "mock" || cfg.MaxSteps == 0 || cfg.MaxContext == 0 || !cfg.Stream || !cfg.ContextCockpit || !cfg.ContextCockpitInject || !cfg.ContextRecipes || !cfg.NegativeContext || !cfg.Skills {
+	if cfg.Provider != "mock" || cfg.MaxSteps == 0 || cfg.MaxContext == 0 || !cfg.Stream || !cfg.ContextCockpit || !cfg.ContextCockpitInject || !cfg.ContextRetrieval || !cfg.ContextRecipes || !cfg.NegativeContext || !cfg.Skills {
 		t.Fatalf("expected defaults, got %+v", cfg)
+	}
+	if cfg.ContextCockpitMaxCards != 10 || cfg.ContextRetrievalTokens != 1000 || cfg.ContextRetrievalChunks != 10 || cfg.ContextEmbeddings || cfg.ContextReranker {
+		t.Fatalf("expected retrieval MVP defaults, got %+v", cfg)
 	}
 }
 
@@ -61,7 +64,7 @@ func TestLoadOldConfigDefaultsNewContextBooleansOn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Stream || !cfg.ContextCockpit || !cfg.ContextCockpitInject || !cfg.ContextCockpitDiff || !cfg.ContextRecipes || !cfg.NegativeContext || !cfg.Skills {
+	if !cfg.Stream || !cfg.ContextCockpit || !cfg.ContextCockpitInject || !cfg.ContextCockpitDiff || !cfg.ContextRetrieval || cfg.ContextEmbeddings || cfg.ContextReranker || !cfg.ContextRecipes || !cfg.NegativeContext || !cfg.Skills {
 		t.Fatalf("expected missing new context booleans to default on: %+v", cfg)
 	}
 }
@@ -75,7 +78,13 @@ func TestWithProfileAppliesContextCockpitOverrides(t *testing.T) {
 		ContextCockpitInject:   &disabled,
 		ContextCockpitTokens:   700,
 		ContextCockpitMaxFiles: 25,
+		ContextCockpitMaxCards: 8,
 		ContextCockpitDiff:     &disabled,
+		ContextRetrieval:       &disabled,
+		ContextRetrievalTokens: 900,
+		ContextRetrievalChunks: 6,
+		ContextEmbeddings:      &disabled,
+		ContextReranker:        &disabled,
 		ContextRecipes:         &disabled,
 		NegativeContext:        &disabled,
 		Skills:                 &disabled,
@@ -84,10 +93,10 @@ func TestWithProfileAppliesContextCockpitOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Stream || got.ContextCockpit || got.ContextCockpitInject || got.ContextCockpitDiff || got.ContextRecipes || got.NegativeContext || got.Skills {
+	if got.Stream || got.ContextCockpit || got.ContextCockpitInject || got.ContextCockpitDiff || got.ContextRetrieval || got.ContextEmbeddings || got.ContextReranker || got.ContextRecipes || got.NegativeContext || got.Skills {
 		t.Fatalf("expected cockpit booleans disabled: %+v", got)
 	}
-	if got.ContextCockpitTokens != 700 || got.ContextCockpitMaxFiles != 25 {
+	if got.ContextCockpitTokens != 700 || got.ContextCockpitMaxFiles != 25 || got.ContextCockpitMaxCards != 8 || got.ContextRetrievalTokens != 900 || got.ContextRetrievalChunks != 6 {
 		t.Fatalf("expected cockpit budgets applied: %+v", got)
 	}
 }

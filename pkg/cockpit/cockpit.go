@@ -17,17 +17,24 @@ import (
 const (
 	DefaultMaxTokens = 1200
 	DefaultMaxFiles  = 60
+	DefaultMaxCards  = 10
 )
 
 type Config struct {
-	Enabled         bool
-	Inject          bool
-	MaxTokens       int
-	MaxFiles        int
-	IncludeDiff     bool
-	IncludeRecipes  bool
-	IncludeNegative bool
-	MaxInstructions int
+	Enabled          bool
+	Inject           bool
+	MaxTokens        int
+	MaxFiles         int
+	MaxCards         int
+	IncludeDiff      bool
+	IncludeRecipes   bool
+	IncludeNegative  bool
+	IncludeRetrieval bool
+	RetrievalTokens  int
+	RetrievalChunks  int
+	UseEmbeddings    bool
+	UseReranker      bool
+	MaxInstructions  int
 }
 
 type Card struct {
@@ -60,8 +67,8 @@ func Build(ctx context.Context, cfg Config, cwd, focus string, contextFiles []st
 	}
 
 	now := time.Now().Format("15:04:05")
-	addCard := func(kind, title, reason, content string) {
-		content = trimToTokenBudget(strings.TrimSpace(content), cardBudget(cfg.MaxTokens))
+	addCardBudget := func(kind, title, reason, content string, budget int) {
+		content = trimToTokenBudget(strings.TrimSpace(content), budget)
 		if content == "" {
 			return
 		}
@@ -74,6 +81,9 @@ func Build(ctx context.Context, cfg Config, cwd, focus string, contextFiles []st
 		}
 		card.Tokens = contextmgr.EstimateTokens(card.Content)
 		snapshot.Cards = append(snapshot.Cards, card)
+	}
+	addCard := func(kind, title, reason, content string) {
+		addCardBudget(kind, title, reason, content, cardBudget(cfg.MaxTokens))
 	}
 
 	repoMap, err := (tools.ProjectMap{}).Run(ctx, tools.Invocation{
@@ -88,6 +98,19 @@ func Build(ctx context.Context, cfg Config, cwd, focus string, contextFiles []st
 		snapshot.Warnings = append(snapshot.Warnings, "project_map: "+err.Error())
 	} else {
 		addCard("repo_map", "Repo Map", "ranked files and symbols for the task", repoMap.Output)
+	}
+
+	if cfg.IncludeRetrieval && strings.TrimSpace(focus) != "" {
+		retrieval, warnings := buildRetrievalCart(ctx, retrievalConfig{
+			MaxTokens:     cfg.RetrievalTokens,
+			MaxChunks:     cfg.RetrievalChunks,
+			MaxFiles:      cfg.MaxFiles,
+			UseEmbeddings: cfg.UseEmbeddings,
+			UseReranker:   cfg.UseReranker,
+			RepoMap:       repoMap.Output,
+		}, cwd, focus)
+		snapshot.Warnings = append(snapshot.Warnings, warnings...)
+		addCardBudget("retrieval_cart", "Retrieval Cart", "BM25 chunks boosted by AST repo-map hints; selected context with token prices", retrieval, cfg.RetrievalTokens)
 	}
 
 	addCard("aci", "Agent Rails", "preferred low-token workflow", strings.Join([]string{
@@ -167,7 +190,7 @@ func Build(ctx context.Context, cfg Config, cwd, focus string, contextFiles []st
 		}
 	}
 
-	snapshot = trimSnapshot(snapshot, cfg.MaxTokens)
+	snapshot = trimSnapshot(snapshot, cfg.MaxTokens, cfg.MaxCards)
 	return snapshot, nil
 }
 
@@ -219,14 +242,29 @@ func normalizeConfig(cfg Config) Config {
 	if cfg.MaxFiles <= 0 {
 		cfg.MaxFiles = DefaultMaxFiles
 	}
+	if cfg.MaxCards <= 0 {
+		cfg.MaxCards = DefaultMaxCards
+	}
+	if cfg.RetrievalTokens <= 0 {
+		cfg.RetrievalTokens = min(1000, max(350, cfg.MaxTokens*2/3))
+	}
+	if cfg.RetrievalChunks <= 0 {
+		cfg.RetrievalChunks = 10
+	}
 	if cfg.MaxInstructions <= 0 {
 		cfg.MaxInstructions = instructions.DefaultMaxBytes
 	}
 	return cfg
 }
 
-func trimSnapshot(snapshot Snapshot, maxTokens int) Snapshot {
+func trimSnapshot(snapshot Snapshot, maxTokens, maxCards int) Snapshot {
+	if maxCards <= 0 {
+		maxCards = DefaultMaxCards
+	}
 	for {
+		if len(snapshot.Cards) > maxCards {
+			snapshot.Cards = snapshot.Cards[:maxCards]
+		}
 		total := 0
 		for i := range snapshot.Cards {
 			snapshot.Cards[i].Tokens = contextmgr.EstimateTokens(snapshot.Cards[i].Content)

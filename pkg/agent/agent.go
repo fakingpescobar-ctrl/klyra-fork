@@ -39,7 +39,13 @@ type Config struct {
 	ContextCockpitInject   bool
 	ContextCockpitTokens   int
 	ContextCockpitMaxFiles int
+	ContextCockpitMaxCards int
 	ContextCockpitDiff     bool
+	ContextRetrieval       bool
+	ContextRetrievalTokens int
+	ContextRetrievalChunks int
+	ContextEmbeddings      bool
+	ContextReranker        bool
 	ContextRecipes         bool
 	NegativeContext        bool
 	Skills                 bool
@@ -134,6 +140,9 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.ContextCockpitMaxFiles <= 0 {
 		cfg.ContextCockpitMaxFiles = cockpit.DefaultMaxFiles
 	}
+	if cfg.ContextCockpitMaxCards <= 0 {
+		cfg.ContextCockpitMaxCards = cockpit.DefaultMaxCards
+	}
 	systemMessage := strings.TrimSpace(cfg.SystemMessage)
 	if systemMessage == "" {
 		systemMessage = defaultSystemMessage()
@@ -169,14 +178,20 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 	}
 
 	cockpitSnapshot, cockpitErr := cockpit.Build(ctx, cockpit.Config{
-		Enabled:         a.cfg.ContextCockpitEnabled,
-		Inject:          a.cfg.ContextCockpitInject,
-		MaxTokens:       a.cfg.ContextCockpitTokens,
-		MaxFiles:        a.cfg.ContextCockpitMaxFiles,
-		IncludeDiff:     a.cfg.ContextCockpitDiff,
-		IncludeRecipes:  a.cfg.ContextRecipes,
-		IncludeNegative: a.cfg.NegativeContext,
-		MaxInstructions: a.cfg.MaxInstructions,
+		Enabled:          a.cfg.ContextCockpitEnabled,
+		Inject:           a.cfg.ContextCockpitInject,
+		MaxTokens:        a.cfg.ContextCockpitTokens,
+		MaxFiles:         a.cfg.ContextCockpitMaxFiles,
+		MaxCards:         a.cfg.ContextCockpitMaxCards,
+		IncludeDiff:      a.cfg.ContextCockpitDiff,
+		IncludeRetrieval: a.cfg.ContextRetrieval,
+		RetrievalTokens:  a.cfg.ContextRetrievalTokens,
+		RetrievalChunks:  a.cfg.ContextRetrievalChunks,
+		UseEmbeddings:    a.cfg.ContextEmbeddings,
+		UseReranker:      a.cfg.ContextReranker,
+		IncludeRecipes:   a.cfg.ContextRecipes,
+		IncludeNegative:  a.cfg.NegativeContext,
+		MaxInstructions:  a.cfg.MaxInstructions,
 	}, a.cfg.CWD, task, a.cfg.ContextFiles)
 	systemMessage := a.cfg.SystemMessage
 	if scopedErr == nil && a.cfg.ContextRecipes && strings.TrimSpace(scopedInstructions.Content) != "" {

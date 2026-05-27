@@ -66,6 +66,76 @@ func TestBuildDisabledReturnsDisabledSnapshot(t *testing.T) {
 	}
 }
 
+func TestBuildIncludesRetrievalCartWithBudgetAndDenyList(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "pkg/auth/login.go", `package auth
+
+func ValidateToken(raw string) bool {
+	return raw == "valid"
+}
+`)
+	writeFile(t, root, "pkg/auth/login_test.go", `package auth
+
+func TestValidateToken(t *testing.T) {
+	if !ValidateToken("valid") {
+		t.Fatal("token rejected")
+	}
+}
+`)
+	writeFile(t, root, "vendor/auth/ignored.go", "package ignored\nfunc ValidateToken() {}\n")
+	writeFile(t, root, "pkg/auth/client.generated.go", "package auth\nfunc ValidateTokenGenerated() {}\n")
+	writeFile(t, root, "package-lock.json", `{"ignored": true}`)
+
+	snapshot, err := Build(context.Background(), Config{
+		Enabled:          true,
+		Inject:           true,
+		MaxTokens:        1000,
+		MaxFiles:         20,
+		MaxCards:         4,
+		IncludeRetrieval: true,
+		RetrievalTokens:  450,
+		RetrievalChunks:  3,
+	}, root, "ValidateToken auth failure", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := snapshot.Markdown()
+	if !strings.Contains(text, "Retrieval Cart") || !strings.Contains(text, "pkg/auth/login.go") {
+		t.Fatalf("expected retrieval cart with auth chunk:\n%s", text)
+	}
+	if !strings.Contains(text, "tokens=") || !strings.Contains(text, "why:") {
+		t.Fatalf("expected selected chunks to show token prices and reasons:\n%s", text)
+	}
+	for _, blocked := range []string{"vendor/auth/ignored.go", "client.generated.go", "package-lock.json"} {
+		if strings.Contains(text, blocked) {
+			t.Fatalf("expected deny-listed path %q to be withheld:\n%s", blocked, text)
+		}
+	}
+	if len(snapshot.Cards) > 4 {
+		t.Fatalf("expected max card budget to hold: %+v", snapshot.Cards)
+	}
+	if snapshot.EstimatedTokens > snapshot.MaxTokens {
+		t.Fatalf("snapshot exceeded budget: %d > %d", snapshot.EstimatedTokens, snapshot.MaxTokens)
+	}
+}
+
+func TestRetrievalCartSkipsChunksOverBudget(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "pkg/auth/large.go", "package auth\n\nfunc ValidateToken() bool {\n"+strings.Repeat("\t_ = \"ValidateToken budget overflow\"\n", 80)+"\treturn true\n}\n")
+
+	cart, warnings := buildRetrievalCart(context.Background(), retrievalConfig{
+		MaxTokens: 5,
+		MaxChunks: 3,
+		MaxFiles:  10,
+	}, root, "ValidateToken")
+	if len(warnings) > 0 {
+		t.Fatalf("unexpected warnings: %+v", warnings)
+	}
+	if strings.TrimSpace(cart) != "" {
+		t.Fatalf("expected over-budget chunk to be skipped, got:\n%s", cart)
+	}
+}
+
 func writeFile(t *testing.T, root, path, content string) {
 	t.Helper()
 	target := filepath.Join(root, path)

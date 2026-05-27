@@ -65,6 +65,15 @@ type options struct {
 	noContextCockpitInject bool
 	contextCockpitTokens   int
 	contextCockpitMaxFiles int
+	contextCockpitMaxCards int
+	contextRetrieval       bool
+	noContextRetrieval     bool
+	contextRetrievalTokens int
+	contextRetrievalChunks int
+	contextEmbeddings      bool
+	noContextEmbeddings    bool
+	contextReranker        bool
+	noContextReranker      bool
 	contextRecipes         bool
 	noContextRecipes       bool
 	skills                 bool
@@ -117,6 +126,15 @@ func newRootCommand() *cobra.Command {
 	root.PersistentFlags().BoolVar(&opts.noContextCockpitInject, "no-context-cockpit-inject", false, "show context cockpit without injecting it into model context")
 	root.PersistentFlags().IntVar(&opts.contextCockpitTokens, "context-cockpit-tokens", 0, "context cockpit token budget")
 	root.PersistentFlags().IntVar(&opts.contextCockpitMaxFiles, "context-cockpit-files", 0, "maximum files ranked in context cockpit repo map")
+	root.PersistentFlags().IntVar(&opts.contextCockpitMaxCards, "context-cockpit-cards", 0, "maximum context cockpit cards")
+	root.PersistentFlags().BoolVar(&opts.contextRetrieval, "context-retrieval", false, "enable BM25/AST retrieval cart cards")
+	root.PersistentFlags().BoolVar(&opts.noContextRetrieval, "no-context-retrieval", false, "disable BM25/AST retrieval cart cards")
+	root.PersistentFlags().IntVar(&opts.contextRetrievalTokens, "context-retrieval-tokens", 0, "context retrieval cart token budget")
+	root.PersistentFlags().IntVar(&opts.contextRetrievalChunks, "context-retrieval-chunks", 0, "maximum context retrieval chunks")
+	root.PersistentFlags().BoolVar(&opts.contextEmbeddings, "context-embeddings", false, "enable semantic retrieval when configured")
+	root.PersistentFlags().BoolVar(&opts.noContextEmbeddings, "no-context-embeddings", false, "disable semantic retrieval")
+	root.PersistentFlags().BoolVar(&opts.contextReranker, "context-reranker", false, "enable reranker when configured")
+	root.PersistentFlags().BoolVar(&opts.noContextReranker, "no-context-reranker", false, "disable reranker")
 	root.PersistentFlags().BoolVar(&opts.contextRecipes, "context-recipes", false, "enable scoped context recipes")
 	root.PersistentFlags().BoolVar(&opts.noContextRecipes, "no-context-recipes", false, "disable scoped context recipes")
 	root.PersistentFlags().BoolVar(&opts.skills, "skills", false, "enable matched project skills")
@@ -161,6 +179,12 @@ func newRootCommand() *cobra.Command {
 				ContextCockpitInject:   runtimeCfg.ContextCockpitInject,
 				ContextCockpitTokens:   runtimeCfg.ContextCockpitTokens,
 				ContextCockpitMaxFiles: runtimeCfg.ContextCockpitMaxFiles,
+				ContextCockpitMaxCards: runtimeCfg.ContextCockpitMaxCards,
+				ContextRetrieval:       runtimeCfg.ContextRetrieval,
+				ContextRetrievalTokens: runtimeCfg.ContextRetrievalTokens,
+				ContextRetrievalChunks: runtimeCfg.ContextRetrievalChunks,
+				ContextEmbeddings:      runtimeCfg.ContextEmbeddings,
+				ContextReranker:        runtimeCfg.ContextReranker,
 				ContextCockpitDiff:     runtimeCfg.ContextCockpitDiff,
 				ContextRecipes:         runtimeCfg.ContextRecipes,
 				NegativeContext:        runtimeCfg.NegativeContext,
@@ -604,6 +628,12 @@ func newTUICommand(opts *options) *cobra.Command {
 					ContextCockpitInject:   runtimeCfg.ContextCockpitInject,
 					ContextCockpitTokens:   runtimeCfg.ContextCockpitTokens,
 					ContextCockpitMaxFiles: runtimeCfg.ContextCockpitMaxFiles,
+					ContextCockpitMaxCards: runtimeCfg.ContextCockpitMaxCards,
+					ContextRetrieval:       runtimeCfg.ContextRetrieval,
+					ContextRetrievalTokens: runtimeCfg.ContextRetrievalTokens,
+					ContextRetrievalChunks: runtimeCfg.ContextRetrievalChunks,
+					ContextEmbeddings:      runtimeCfg.ContextEmbeddings,
+					ContextReranker:        runtimeCfg.ContextReranker,
 					ContextCockpitDiff:     runtimeCfg.ContextCockpitDiff,
 					ContextRecipes:         runtimeCfg.ContextRecipes,
 					NegativeContext:        runtimeCfg.NegativeContext,
@@ -736,6 +766,12 @@ func newTUICommand(opts *options) *cobra.Command {
 				ContextCockpitInject:   runtimeCfg.ContextCockpitInject,
 				ContextCockpitTokens:   runtimeCfg.ContextCockpitTokens,
 				ContextCockpitMaxFiles: runtimeCfg.ContextCockpitMaxFiles,
+				ContextCockpitMaxCards: runtimeCfg.ContextCockpitMaxCards,
+				ContextRetrieval:       runtimeCfg.ContextRetrieval,
+				ContextRetrievalTokens: runtimeCfg.ContextRetrievalTokens,
+				ContextRetrievalChunks: runtimeCfg.ContextRetrievalChunks,
+				ContextEmbeddings:      runtimeCfg.ContextEmbeddings,
+				ContextReranker:        runtimeCfg.ContextReranker,
 				ContextCockpitDiff:     runtimeCfg.ContextCockpitDiff,
 				ContextRecipes:         runtimeCfg.ContextRecipes,
 				NegativeContext:        runtimeCfg.NegativeContext,
@@ -935,8 +971,12 @@ func formatTUISettings(cfg appconfig.Config, attachments []llm.Attachment) strin
 	fmt.Fprintf(&builder, "- max instruction bytes: `%d`\n", cfg.MaxInstructions)
 	fmt.Fprintf(&builder, "- context cockpit: `%s`\n", onOff(cfg.ContextCockpit))
 	fmt.Fprintf(&builder, "- cockpit inject: `%s`\n", onOff(cfg.ContextCockpitInject))
-	fmt.Fprintf(&builder, "- cockpit budget: `%d tokens / %d files`\n", cfg.ContextCockpitTokens, cfg.ContextCockpitMaxFiles)
+	fmt.Fprintf(&builder, "- cockpit budget: `%d tokens / %d files / %d cards`\n", cfg.ContextCockpitTokens, cfg.ContextCockpitMaxFiles, cfg.ContextCockpitMaxCards)
 	fmt.Fprintf(&builder, "- cockpit diff: `%s`\n", onOff(cfg.ContextCockpitDiff))
+	fmt.Fprintf(&builder, "- retrieval cart: `%s`\n", onOff(cfg.ContextRetrieval))
+	fmt.Fprintf(&builder, "- retrieval budget: `%d tokens / %d chunks`\n", cfg.ContextRetrievalTokens, cfg.ContextRetrievalChunks)
+	fmt.Fprintf(&builder, "- embeddings: `%s`\n", onOff(cfg.ContextEmbeddings))
+	fmt.Fprintf(&builder, "- reranker: `%s`\n", onOff(cfg.ContextReranker))
 	fmt.Fprintf(&builder, "- context recipes: `%s`\n", onOff(cfg.ContextRecipes))
 	fmt.Fprintf(&builder, "- negative context: `%s`\n", onOff(cfg.NegativeContext))
 	fmt.Fprintf(&builder, "- skills: `%s`\n", onOff(cfg.Skills))
@@ -1060,6 +1100,42 @@ func applyTUISet(cfg *appconfig.Config, args []string) error {
 				return fmt.Errorf("context_cockpit_files must be a positive integer")
 			}
 			cfg.ContextCockpitMaxFiles = parsed
+		case "context_cockpit_cards", "cockpit_cards":
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed <= 0 {
+				return fmt.Errorf("context_cockpit_cards must be a positive integer")
+			}
+			cfg.ContextCockpitMaxCards = parsed
+		case "context_retrieval", "retrieval":
+			parsed, err := parseBoolSetting(value)
+			if err != nil {
+				return fmt.Errorf("context_retrieval must be on/off")
+			}
+			cfg.ContextRetrieval = parsed
+		case "context_retrieval_tokens", "retrieval_tokens":
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed <= 0 {
+				return fmt.Errorf("context_retrieval_tokens must be a positive integer")
+			}
+			cfg.ContextRetrievalTokens = parsed
+		case "context_retrieval_chunks", "retrieval_chunks":
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed <= 0 {
+				return fmt.Errorf("context_retrieval_chunks must be a positive integer")
+			}
+			cfg.ContextRetrievalChunks = parsed
+		case "context_embeddings", "embeddings":
+			parsed, err := parseBoolSetting(value)
+			if err != nil {
+				return fmt.Errorf("context_embeddings must be on/off")
+			}
+			cfg.ContextEmbeddings = parsed
+		case "context_reranker", "reranker":
+			parsed, err := parseBoolSetting(value)
+			if err != nil {
+				return fmt.Errorf("context_reranker must be on/off")
+			}
+			cfg.ContextReranker = parsed
 		case "context_recipes", "recipes":
 			parsed, err := parseBoolSetting(value)
 			if err != nil {
@@ -1117,14 +1193,20 @@ func formatContextCart(files []string) string {
 
 func formatContextCockpit(cfg appconfig.Config, cwd, focus string) (string, error) {
 	snapshot, err := cockpit.Build(context.Background(), cockpit.Config{
-		Enabled:         cfg.ContextCockpit,
-		Inject:          cfg.ContextCockpitInject,
-		MaxTokens:       cfg.ContextCockpitTokens,
-		MaxFiles:        cfg.ContextCockpitMaxFiles,
-		IncludeDiff:     cfg.ContextCockpitDiff,
-		IncludeRecipes:  cfg.ContextRecipes,
-		IncludeNegative: cfg.NegativeContext,
-		MaxInstructions: cfg.MaxInstructions,
+		Enabled:          cfg.ContextCockpit,
+		Inject:           cfg.ContextCockpitInject,
+		MaxTokens:        cfg.ContextCockpitTokens,
+		MaxFiles:         cfg.ContextCockpitMaxFiles,
+		MaxCards:         cfg.ContextCockpitMaxCards,
+		IncludeDiff:      cfg.ContextCockpitDiff,
+		IncludeRetrieval: cfg.ContextRetrieval,
+		RetrievalTokens:  cfg.ContextRetrievalTokens,
+		RetrievalChunks:  cfg.ContextRetrievalChunks,
+		UseEmbeddings:    cfg.ContextEmbeddings,
+		UseReranker:      cfg.ContextReranker,
+		IncludeRecipes:   cfg.ContextRecipes,
+		IncludeNegative:  cfg.NegativeContext,
+		MaxInstructions:  cfg.MaxInstructions,
 	}, cwd, focus, cfg.ContextFiles)
 	if err != nil {
 		return "", err
@@ -1530,6 +1612,12 @@ func newChatCommand(opts *options) *cobra.Command {
 				ContextCockpitInject:   runtimeCfg.ContextCockpitInject,
 				ContextCockpitTokens:   runtimeCfg.ContextCockpitTokens,
 				ContextCockpitMaxFiles: runtimeCfg.ContextCockpitMaxFiles,
+				ContextCockpitMaxCards: runtimeCfg.ContextCockpitMaxCards,
+				ContextRetrieval:       runtimeCfg.ContextRetrieval,
+				ContextRetrievalTokens: runtimeCfg.ContextRetrievalTokens,
+				ContextRetrievalChunks: runtimeCfg.ContextRetrievalChunks,
+				ContextEmbeddings:      runtimeCfg.ContextEmbeddings,
+				ContextReranker:        runtimeCfg.ContextReranker,
 				ContextCockpitDiff:     runtimeCfg.ContextCockpitDiff,
 				ContextRecipes:         runtimeCfg.ContextRecipes,
 				NegativeContext:        runtimeCfg.NegativeContext,
@@ -1951,6 +2039,33 @@ func effectiveConfig(cmd *cobra.Command, opts options) (appconfig.Config, error)
 	}
 	if flags.Changed("context-cockpit-files") {
 		cfg.ContextCockpitMaxFiles = opts.contextCockpitMaxFiles
+	}
+	if flags.Changed("context-cockpit-cards") {
+		cfg.ContextCockpitMaxCards = opts.contextCockpitMaxCards
+	}
+	if flags.Changed("context-retrieval") {
+		cfg.ContextRetrieval = opts.contextRetrieval
+	}
+	if flags.Changed("no-context-retrieval") {
+		cfg.ContextRetrieval = !opts.noContextRetrieval
+	}
+	if flags.Changed("context-retrieval-tokens") {
+		cfg.ContextRetrievalTokens = opts.contextRetrievalTokens
+	}
+	if flags.Changed("context-retrieval-chunks") {
+		cfg.ContextRetrievalChunks = opts.contextRetrievalChunks
+	}
+	if flags.Changed("context-embeddings") {
+		cfg.ContextEmbeddings = opts.contextEmbeddings
+	}
+	if flags.Changed("no-context-embeddings") {
+		cfg.ContextEmbeddings = !opts.noContextEmbeddings
+	}
+	if flags.Changed("context-reranker") {
+		cfg.ContextReranker = opts.contextReranker
+	}
+	if flags.Changed("no-context-reranker") {
+		cfg.ContextReranker = !opts.noContextReranker
 	}
 	if flags.Changed("context-recipes") {
 		cfg.ContextRecipes = opts.contextRecipes
