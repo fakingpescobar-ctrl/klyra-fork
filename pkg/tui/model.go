@@ -1097,9 +1097,30 @@ func (m Model) updateSettingsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) renderHeader() string {
 	width := max(50, m.width)
 
-	// Brand logo/text
-	brandStyle := lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
-	logo := brandStyle.Render("❖ KLYRA")
+	// --- Logo (>< chevrons with gradient bar) ---
+	chevronStyle := lipgloss.NewStyle().Foreground(colorWhite).Bold(true)
+	
+	colors := []string{"#A855F7", "#8B5CF6", "#6366F1", "#3B82F6", "#0EA5E9", "#06B6D4"}
+	var gradientBar strings.Builder
+	for _, hex := range colors {
+		gradientBar.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render("█"))
+	}
+
+	logoLines := []string{
+		chevronStyle.Render("     ██▄                ▄██"),
+		chevronStyle.Render("       ██▄            ▄██"),
+		chevronStyle.Render("         ██▄        ▄██"),
+		chevronStyle.Render("         ▄██        ██▄"),
+		chevronStyle.Render("       ▄██            ██▄"),
+		chevronStyle.Render("     ▄██     ") + gradientBar.String() + chevronStyle.Render("     ██▄"),
+	}
+
+	titleText := m.title
+	if strings.TrimSpace(titleText) == "" {
+		titleText = "Klyra"
+	}
+	title := lipgloss.NewStyle().Foreground(colorBrand).Bold(true).Render(titleText)
+	subtitle := lipgloss.NewStyle().Foreground(colorDim).Render("  agentic coding workspace")
 
 	// Status
 	status := "ready"
@@ -1137,16 +1158,18 @@ func (m Model) renderHeader() string {
 	barWidth := max(10, min(width-2, 90))
 	bar := lipgloss.NewStyle().Foreground(colorSeparator).Render(strings.Repeat("─", barWidth))
 
-	// Assemble layout in 2 compact lines + separator
-	line1 := lipgloss.JoinHorizontal(lipgloss.Center, "  ", logo, "  ", statusBadge, "  ", providerBadge, " ", modelBadge, " ", reasoningBadge)
-	line2 := lipgloss.JoinHorizontal(lipgloss.Center, "  ", budgets, "   ", safetyBadge)
+	topLine := lipgloss.JoinHorizontal(lipgloss.Top, title, subtitle)
+	badgeLine := lipgloss.JoinHorizontal(lipgloss.Top, statusBadge, " ", providerBadge, " ", modelBadge, " ", reasoningBadge)
 
-	result := []string{
+	result := []string{""}
+	result = append(result, logoLines...)
+	result = append(result,
 		"",
-		line1,
-		line2,
-		"  " + bar,
-	}
+		"  "+topLine,
+		"  "+badgeLine,
+		"  "+budgets+"  "+safetyBadge,
+		"  "+bar,
+	)
 
 	return strings.Join(result, "\n")
 }
