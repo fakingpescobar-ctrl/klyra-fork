@@ -162,7 +162,7 @@ func TestAgentInjectsScopedContextRecipes(t *testing.T) {
 		t.Fatal(err)
 	}
 	system := provider.requests[0].Messages[0].Content
-	if !strings.Contains(system, "Context recipes selected for this task") || !strings.Contains(system, "Use reversible migrations.") {
+	if !strings.Contains(system, "Scoped rules matched for this task") || !strings.Contains(system, "Use reversible migrations.") {
 		t.Fatalf("scoped recipe was not injected: %s", system)
 	}
 }
@@ -418,6 +418,48 @@ func TestAgentUsesApprovalCallback(t *testing.T) {
 	}
 	if !strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content, "rejected by user") {
 		t.Fatalf("expected rejection observation: %+v", provider.requests[1].Messages)
+	}
+}
+
+func TestAgentAlwaysApprovalSkipsCallback(t *testing.T) {
+	dir := t.TempDir()
+	provider := &scriptedProvider{
+		responses: []llm.Response{
+			{
+				ToolCalls: []llm.ToolCall{{
+					ID:        "call-1",
+					Name:      "write_file",
+					Arguments: map[string]any{"path": "x.txt", "content": "ok"},
+				}},
+			},
+			{Content: "done"},
+		},
+	}
+	called := false
+	agent, err := New(Config{
+		CWD:          dir,
+		Provider:     provider,
+		Tools:        tools.NewDefaultRegistry(),
+		ApprovalMode: "always",
+		Mode:         "edit",
+		ContextFiles: []string{"x.txt"},
+		Output:       io.Discard,
+		Approver: func(ApprovalRequest) (bool, error) {
+			called = true
+			return false, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.Run(context.Background(), "write file"); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("always approval should not call approval callback")
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "x.txt")); err != nil || string(data) != "ok" {
+		t.Fatalf("expected tool to run under always approval, data=%q err=%v", data, err)
 	}
 }
 

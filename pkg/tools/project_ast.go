@@ -68,6 +68,31 @@ func astSymbolSummaries(ctx context.Context, root string, files []string, focus 
 	return summaries
 }
 
+func findASTSymbolRange(ctx context.Context, path, rel, symbol string) (int, int, bool, error) {
+	lang, _ := treeSitterLanguageForPath(rel)
+	if lang == nil {
+		return 0, 0, false, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	root, err := sitter.ParseCtx(ctx, data, lang)
+	if err != nil || root == nil {
+		return 0, 0, false, err
+	}
+	node := findSymbolNode(root, data, strings.TrimSpace(symbol), 0)
+	if node == nil {
+		return 0, 0, false, nil
+	}
+	start := int(node.StartPoint().Row) + 1
+	end := int(node.EndPoint().Row) + 1
+	if end < start {
+		end = start
+	}
+	return start, end, true, nil
+}
+
 func parseASTFileSummary(ctx context.Context, path, rel string, focusTerms []string) (astFileSummary, error) {
 	lang, name := treeSitterLanguageForPath(rel)
 	if lang == nil {
@@ -96,6 +121,36 @@ func parseASTFileSummary(ctx context.Context, path, rel string, focusTerms []str
 		}
 	}
 	return summary, nil
+}
+
+func findSymbolNode(node *sitter.Node, source []byte, symbol string, depth int) *sitter.Node {
+	if node == nil || depth > 10 {
+		return nil
+	}
+	if isSymbolNode(node.Type()) {
+		name := nodeName(node, source)
+		if symbolNameMatches(name, symbol) {
+			return node
+		}
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		if found := findSymbolNode(node.NamedChild(i), source, symbol, depth+1); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func symbolNameMatches(name, symbol string) bool {
+	name = strings.TrimSpace(name)
+	symbol = strings.TrimSpace(symbol)
+	if name == "" || symbol == "" {
+		return false
+	}
+	if name == symbol {
+		return true
+	}
+	return strings.HasSuffix(symbol, "."+name) || strings.HasSuffix(name, "."+symbol)
 }
 
 func walkAST(node *sitter.Node, source []byte, depth int, summary *astFileSummary) {

@@ -9,17 +9,20 @@ import (
 
 func TestSpecsForTaskPrunesWriteToolsForInspection(t *testing.T) {
 	specs := NewDefaultRegistry().SpecsForTask("inspect project")
-	if hasSpec(specs, "write_file") || hasSpec(specs, "diff_patch") {
+	if hasSpec(specs, "write_file") || hasSpec(specs, "diff_patch") || hasSpec(specs, "replace_symbol") {
 		t.Fatalf("inspection should not include edit tools: %+v", specs)
 	}
-	if !hasSpec(specs, "project_map") || !hasSpec(specs, "read_file") {
+	if !hasSpec(specs, "project_map") || !hasSpec(specs, "file_outline") || !hasSpec(specs, "read_symbol") || !hasSpec(specs, "read_file") {
 		t.Fatalf("inspection should include retrieval tools: %+v", specs)
 	}
 }
 
 func TestSpecsForTaskIncludesEditToolsForImplementation(t *testing.T) {
 	specs := NewDefaultRegistry().SpecsForTask("реализуй поддержку go tests")
-	if !hasSpec(specs, "write_file") || !hasSpec(specs, "diff_patch") || !hasSpec(specs, "bash") || !hasSpec(specs, "workspace_checkpoint") {
+	if hasSpec(specs, "write_file") {
+		t.Fatalf("implementation should hide primitive full-file writer: %+v", specs)
+	}
+	if !hasSpec(specs, "create_file") || !hasSpec(specs, "diff_patch") || !hasSpec(specs, "replace_symbol") || !hasSpec(specs, "replace_lines") || !hasSpec(specs, "insert_lines") || !hasSpec(specs, "bash") || !hasSpec(specs, "workspace_checkpoint") {
 		t.Fatalf("implementation should include edit and verification tools: %+v", specs)
 	}
 }
@@ -46,7 +49,7 @@ func TestRunWithSandboxBlocksNetworkInWorkspaceWrite(t *testing.T) {
 
 func TestSpecsForInspectModeBlocksEditTools(t *testing.T) {
 	specs := NewDefaultRegistry().SpecsForTaskMode("fix bug", "inspect", nil)
-	if hasSpec(specs, "write_file") || hasSpec(specs, "diff_patch") || hasSpec(specs, "bash") {
+	if hasSpec(specs, "write_file") || hasSpec(specs, "diff_patch") || hasSpec(specs, "replace_symbol") || hasSpec(specs, "bash") {
 		t.Fatalf("inspect mode should expose retrieval only: %+v", specs)
 	}
 }
@@ -68,6 +71,60 @@ func TestEditModeBlocksFilesOutsideContextCart(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected edit mode to block files outside context cart")
+	}
+}
+
+func TestEditModeBlocksCreateFileOutsideContextCart(t *testing.T) {
+	_, err := NewDefaultRegistry().RunWithPolicy(context.Background(), t.TempDir(), "workspace-write", "edit", []string{"allowed.go"}, llm.ToolCall{
+		Name:      "create_file",
+		Arguments: map[string]any{"path": "other.go", "content": "x"},
+	})
+	if err == nil {
+		t.Fatal("expected edit mode to block create_file outside context cart")
+	}
+}
+
+func TestEditModeBlocksSmallWriteToolsOutsideContextCart(t *testing.T) {
+	_, err := NewDefaultRegistry().RunWithPolicy(context.Background(), t.TempDir(), "workspace-write", "edit", []string{"allowed.go"}, llm.ToolCall{
+		Name:      "replace_lines",
+		Arguments: map[string]any{"path": "other.go", "start_line": 1, "end_line": 1, "content": "x"},
+	})
+	if err == nil {
+		t.Fatal("expected edit mode to block replace_lines outside context cart")
+	}
+}
+
+func TestEditModeBlocksWriteFileOverExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "allowed.go", "package main\n")
+	_, err := NewDefaultRegistry().RunWithPolicy(context.Background(), dir, "workspace-write", "edit", []string{"allowed.go"}, llm.ToolCall{
+		Name:      "write_file",
+		Arguments: map[string]any{"path": "allowed.go", "content": "package main\n\nfunc main() {}\n"},
+	})
+	if err == nil {
+		t.Fatal("expected edit mode to block primitive write_file overwrite")
+	}
+}
+
+func TestCreateFileRefusesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "new.go", "package main\n")
+	_, err := NewDefaultRegistry().RunWithPolicy(context.Background(), dir, "workspace-write", "edit", []string{"new.go"}, llm.ToolCall{
+		Name:      "create_file",
+		Arguments: map[string]any{"path": "new.go", "content": "package main\n"},
+	})
+	if err == nil {
+		t.Fatal("expected create_file to refuse overwrite")
+	}
+}
+
+func TestReadOnlySandboxBlocksSmallWriteTools(t *testing.T) {
+	_, err := NewDefaultRegistry().RunWithSandbox(context.Background(), t.TempDir(), "read-only", llm.ToolCall{
+		Name:      "insert_lines",
+		Arguments: map[string]any{"path": "x.txt", "after_line": 0, "content": "x"},
+	})
+	if err == nil {
+		t.Fatal("expected read-only sandbox to block insert_lines")
 	}
 }
 

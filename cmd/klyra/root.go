@@ -101,7 +101,7 @@ func newRootCommand() *cobra.Command {
 	root.PersistentFlags().StringVar(&opts.reasoning, "reasoning", "", "reasoning effort for providers that support it")
 	root.PersistentFlags().BoolVar(&opts.store, "store", false, "allow provider-side response storage when supported")
 	root.PersistentFlags().BoolVar(&opts.stream, "stream", false, "stream model output when the provider supports it")
-	root.PersistentFlags().StringVar(&opts.approval, "approval", "", "tool approval mode: auto, ask, never")
+	root.PersistentFlags().StringVar(&opts.approval, "approval", "", "tool approval mode: auto, ask, always, never")
 	root.PersistentFlags().StringVar(&opts.sandbox, "sandbox", "", "sandbox profile: read-only, workspace-write, danger-full-access")
 	root.PersistentFlags().StringVar(&opts.mode, "mode", "", "agent mode: inspect, edit, repair, refactor")
 	root.PersistentFlags().StringSliceVar(&opts.contextFiles, "context-file", nil, "file allowed in edit/refactor context cart; repeatable")
@@ -244,7 +244,7 @@ func newTUICommand(opts *options) *cobra.Command {
 				{Name: "/endpoint", Description: "Set provider endpoint base URL"},
 				{Name: "/reasoning", Description: "Set reasoning effort: minimal/low/medium/high/xhigh"},
 				{Name: "/limits", Description: "Set token/step budgets"},
-				{Name: "/approval", Description: "Set approval mode: auto/ask/never"},
+				{Name: "/approval", Description: "Set approval mode: auto/ask/always/never"},
 				{Name: "/sandbox", Description: "Set sandbox: read-only/workspace-write/danger-full-access"},
 				{Name: "/mode", Description: "Set mode: inspect/edit/repair/refactor"},
 				{Name: "/cart", Description: "Show or add context cart files"},
@@ -379,7 +379,7 @@ func newTUICommand(opts *options) *cobra.Command {
 						return formatSettingSaved("limit "+args[1], args[2]), nil
 					case "/approval":
 						if len(args) < 2 {
-							return "usage: /approval auto|ask|never", nil
+							return "usage: /approval auto|ask|always|never", nil
 						}
 						runtimeCfg.ApprovalMode = args[1]
 						_ = runtimeCfg.Save(opts.configPath)

@@ -87,17 +87,16 @@ func Build(ctx context.Context, cfg Config, cwd, focus string, contextFiles []st
 	if err != nil {
 		snapshot.Warnings = append(snapshot.Warnings, "project_map: "+err.Error())
 	} else {
-		addCard("repo_map", "Repo Map", "ranked files, symbols, imports, and signatures for the current task", repoMap.Output)
+		addCard("repo_map", "Repo Map", "ranked files and symbols for the task", repoMap.Output)
 	}
 
-	addCard("aci", "Agent Rails", "commands weak/local models should prefer for small safe steps", strings.Join([]string{
-		"- start broad work with project_map around 1000 tokens",
-		"- use search before opening files",
-		"- use read_go_symbol for Go declarations when possible",
-		"- use read_file with start_line and about 100 lines instead of dumping files",
-		"- use git_status/git_diff before edits and tests after edits",
-		"- prefer diff_patch for changes; write_file only for new or complete files",
-		"- treat Negative Context as a deny-list unless the user explicitly asks for those files",
+	addCard("aci", "Agent Rails", "preferred low-token workflow", strings.Join([]string{
+		"- map/search/outline before reading files",
+		"- read one symbol or about 100 lines",
+		"- edit existing files with replace_symbol/replace_lines/insert_lines/diff_patch",
+		"- create new files with create_file; never rewrite existing files from scratch",
+		"- check git diff and run focused tests after edits",
+		"- do not open Negative Context unless asked",
 	}, "\n"))
 
 	if cfg.IncludeRecipes {
@@ -116,7 +115,7 @@ func Build(ctx context.Context, cfg Config, cwd, focus string, contextFiles []st
 			if scoped.Truncated {
 				lines = append(lines, "- scoped recipes truncated by configured byte budget")
 			}
-			addCard("recipes", "Context Recipes", "scoped rules matched by task, AST-ish path hints, and context cart files", strings.Join(lines, "\n"))
+			addCard("recipes", "Context Recipes", "scoped rules matched for this task", strings.Join(lines, "\n"))
 		}
 	}
 
@@ -125,14 +124,14 @@ func Build(ctx context.Context, cfg Config, cwd, focus string, contextFiles []st
 		for _, file := range contextFiles {
 			lines = append(lines, "- "+file)
 		}
-		addCard("cart", "Context Cart", "explicit files allowed for edit/refactor tools", strings.Join(lines, "\n"))
+		addCard("cart", "Context Cart", "files allowed for edit/refactor tools", strings.Join(lines, "\n"))
 	}
 
 	status, err := (tools.GitStatus{}).Run(ctx, tools.Invocation{CWD: cwd, Args: map[string]any{}})
 	if err != nil {
 		snapshot.Warnings = append(snapshot.Warnings, "git_status: "+err.Error())
 	} else if strings.TrimSpace(status.Output) != "" {
-		addCard("git_status", "Workspace Changes", "current dirty state that can affect edits and tests", status.Output)
+		addCard("git_status", "Workspace Changes", "current dirty state", status.Output)
 	}
 
 	if cfg.IncludeDiff {
@@ -140,7 +139,7 @@ func Build(ctx context.Context, cfg Config, cwd, focus string, contextFiles []st
 		if err != nil {
 			snapshot.Warnings = append(snapshot.Warnings, "git_diff: "+err.Error())
 		} else if strings.TrimSpace(diff.Output) != "" && strings.TrimSpace(diff.Output) != "no tracked diff" {
-			addCard("diff", "Related Diff", "tracked changes already present in the workspace", diff.Output)
+			addCard("diff", "Related Diff", "tracked changes already present", diff.Output)
 		}
 	}
 
@@ -159,12 +158,12 @@ func Build(ctx context.Context, cfg Config, cwd, focus string, contextFiles []st
 		if loaded.Truncated {
 			lines = append(lines, "- instruction set truncated by configured byte budget")
 		}
-		addCard("rules", "Project Rules", "instruction sources already loaded into the system prompt", strings.Join(lines, "\n"))
+		addCard("rules", "Project Rules", "instruction sources loaded into the system prompt", strings.Join(lines, "\n"))
 	}
 
 	if cfg.IncludeNegative {
 		if negative := detectNegativeContext(cwd, 40); strings.TrimSpace(negative) != "" {
-			addCard("negative_context", "Negative Context", "files intentionally withheld from model context to avoid token waste and distraction", negative)
+			addCard("negative_context", "Negative Context", "files withheld to save tokens", negative)
 		}
 	}
 
@@ -192,6 +191,23 @@ func (s Snapshot) Markdown() string {
 		builder.WriteString("```text\n")
 		builder.WriteString(strings.TrimSpace(card.Content))
 		builder.WriteString("\n```\n")
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func (s Snapshot) PromptText() string {
+	if !s.Enabled {
+		return ""
+	}
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "budget=%d estimated=%d\n", s.MaxTokens, s.EstimatedTokens)
+	for _, warning := range s.Warnings {
+		fmt.Fprintf(&builder, "warning: %s\n", warning)
+	}
+	for _, card := range s.Cards {
+		fmt.Fprintf(&builder, "\n[%s] %s\n", card.Title, card.Reason)
+		builder.WriteString(strings.TrimSpace(card.Content))
+		builder.WriteString("\n")
 	}
 	return strings.TrimSpace(builder.String())
 }

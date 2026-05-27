@@ -16,7 +16,7 @@ type ProjectMap struct{}
 func (ProjectMap) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        "project_map",
-		Description: "Return a token-budgeted repo map with important files, Go symbols, imports, and likely relevant slices. Use this before broad exploration.",
+		Description: "Token-budgeted repo map with ranked files and AST symbols. Use before broad exploration.",
 		Parameters: objectSchema(map[string]any{
 			"max_files":  integerProperty("Maximum important files to include.", 1),
 			"max_tokens": integerProperty("Approximate token budget for the map.", 1),

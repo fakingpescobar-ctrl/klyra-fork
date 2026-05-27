@@ -44,6 +44,13 @@ func TestBuildCreatesBudgetedFactCards(t *testing.T) {
 			t.Fatalf("expected %q in cockpit markdown:\n%s", want, text)
 		}
 	}
+	prompt := snapshot.PromptText()
+	if strings.Contains(prompt, "```") || strings.Contains(prompt, "freshness") || strings.Contains(prompt, "kind:") {
+		t.Fatalf("prompt text should be compact, not UI markdown:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "[Repo Map]") || !strings.Contains(prompt, "map/search/outline") {
+		t.Fatalf("prompt text should keep card content:\n%s", prompt)
+	}
 }
 
 func TestBuildDisabledReturnsDisabledSnapshot(t *testing.T) {

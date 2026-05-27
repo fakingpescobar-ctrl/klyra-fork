@@ -176,7 +176,7 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 		systemMessage = withScopedInstructions(systemMessage, scopedInstructions)
 	}
 	if cockpitErr == nil && cockpitSnapshot.Enabled && cockpitSnapshot.Injected && len(cockpitSnapshot.Cards) > 0 {
-		systemMessage = strings.TrimSpace(systemMessage) + "\n\nContext cockpit fact cards. Treat this as a small, explainable context slice, not as the whole project:\n" + cockpitSnapshot.Markdown()
+		systemMessage = strings.TrimSpace(systemMessage) + "\n\nContext cockpit fact cards. Use these as a compact starting slice, then verify with tools:\n" + cockpitSnapshot.PromptText()
 	}
 
 	window := contextmgr.NewBudgetedWindow(a.cfg.MaxMessages, a.cfg.MaxContext)
@@ -387,9 +387,11 @@ func (a *Agent) approveToolCall(call llm.ToolCall) error {
 	switch strings.ToLower(strings.TrimSpace(a.cfg.ApprovalMode)) {
 	case "", "auto":
 		return nil
+	case "always", "allow":
+		return nil
 	case "never", "deny":
 		return fmt.Errorf("%s requires approval", call.Name)
-	case "ask", "always":
+	case "ask":
 		if a.cfg.Approver != nil {
 			approved, err := a.cfg.Approver(ApprovalRequest{
 				Tool:   call.Name,
@@ -450,14 +452,14 @@ func toolObservation(call llm.ToolCall, result tools.Result, runErr error) strin
 }
 
 func defaultSystemMessage() string {
-	return strings.TrimSpace(`You are an agentic coding CLI.
-Use tools to inspect the workspace before changing files.
-Prefer precise retrieval over reading entire large files.
-Start broad coding tasks with project_map, then use search/read_go_symbol/read_file slices.
-Keep stable context first for provider prompt caching: system rules, project rules, scoped recipes, repo map, then dynamic user request/diff/test errors.
-Use diff_patch for edits when possible and bash only when the command is necessary.
-Return concise progress and final summaries.
-Do not edit files outside the workspace.`)
+	return strings.TrimSpace(`You are Klyra, a local coding agent.
+Work in small verified steps:
+1. Inspect first. Use project_map, search, file_outline, read_symbol, then small read_file slices.
+2. Do not guess file contents or project rules; call tools when unsure.
+3. Edit narrowly. For existing files use replace_symbol, replace_lines, insert_lines, or diff_patch. Use create_file only for new files; do not rewrite existing files from scratch.
+4. Run focused checks after edits when available. Use bash only when needed.
+5. Keep answers concise: what changed, what was checked, and any remaining risk.
+Never edit outside the workspace.`)
 }
 
 func withProjectInstructions(base string, loaded instructions.Result) string {
@@ -466,10 +468,10 @@ func withProjectInstructions(base string, loaded instructions.Result) string {
 	}
 	var builder strings.Builder
 	builder.WriteString(strings.TrimSpace(base))
-	builder.WriteString("\n\nProject instructions from local files. Follow these when they do not conflict with direct user instructions:\n")
+	builder.WriteString("\n\nProject rules. Follow unless the user directly overrides them:\n")
 	builder.WriteString(strings.TrimSpace(loaded.Content))
 	if loaded.Truncated {
-		builder.WriteString("\n\nProject instructions were truncated to fit the configured instruction budget.")
+		builder.WriteString("\n\nSome project rules were truncated by the configured budget.")
 	}
 	return builder.String()
 }
@@ -480,10 +482,10 @@ func withScopedInstructions(base string, loaded instructions.ScopedResult) strin
 	}
 	var builder strings.Builder
 	builder.WriteString(strings.TrimSpace(base))
-	builder.WriteString("\n\nContext recipes selected for this task. These scoped rules were matched by task text and workspace paths:\n")
+	builder.WriteString("\n\nScoped rules matched for this task:\n")
 	builder.WriteString(strings.TrimSpace(loaded.Content))
 	if loaded.Truncated {
-		builder.WriteString("\n\nContext recipes were truncated to fit the configured instruction budget.")
+		builder.WriteString("\n\nSome scoped rules were truncated by the configured budget.")
 	}
 	return builder.String()
 }

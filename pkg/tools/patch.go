@@ -14,7 +14,7 @@ type DiffPatcher struct{}
 func (DiffPatcher) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        "diff_patch",
-		Description: "Apply a unified diff patch in the workspace using git apply.",
+		Description: "Apply a unified diff in the workspace with git apply.",
 		Parameters: objectSchema(map[string]any{
 			"patch": stringProperty("Unified diff patch."),
 		}, "patch"),
@@ -39,7 +39,7 @@ type DiffPreview struct{}
 func (DiffPreview) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        "diff_preview",
-		Description: "Validate a unified diff with git apply --check and return a compact diffstat without applying it.",
+		Description: "Validate a unified diff and return compact diffstat; do not apply.",
 		Parameters: objectSchema(map[string]any{
 			"patch":     stringProperty("Unified diff patch."),
 			"max_lines": integerProperty("Maximum compressed output lines.", 1),

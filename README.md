@@ -127,7 +127,7 @@ Example TUI flow:
 explain this screenshot and inspect the relevant code
 ```
 
-When approval mode is `ask`, risky tool calls appear as an in-app approval prompt. Press `y`/`Enter` to approve or `n`/`Esc` to reject.
+When approval mode is `ask`, risky tool calls appear as an in-app approval prompt. Press `y`/`Enter` to approve or `n`/`Esc` to reject. Use `always` to allow tool calls without prompts.
 
 Image attachments are sent only with the next model request and are not stored as base64 in session history, keeping future turns cheap.
 
@@ -176,10 +176,11 @@ Use `go run . instructions --content` to inspect exactly what the agent will see
 
 ## Approval policy
 
-Risky tools (`bash`, `write_file`, `diff_patch`) support approval modes:
+Risky tools (`bash`, `write_file`, `diff_patch`, focused write tools, and checkpoint restore) support approval modes:
 
 ```sh
 go run . --approval ask run "fix the failing tests"
+go run . --approval always run "apply the known local fix"
 go run . --approval never run "inspect only"
 ```
 
@@ -241,11 +242,15 @@ Agent CLI estimates prompt tokens locally and packs context before provider call
 
 ## Implemented tools
 
-- `project_map`: token-budgeted repo map for low-token discovery; includes important files, Go package/imports, funcs, methods, types, and focus-based ranking.
+- `project_map`: token-budgeted repo map for low-token discovery; includes important files and AST symbols.
 - `list_files`: lists workspace files while skipping common generated directories.
 - `read_file`: reads files with line slicing.
+- `file_outline`: returns compact imports/symbols for one file.
+- `read_symbol`: reads one AST symbol instead of a whole file.
 - `read_go_symbol`: reads a Go declaration by symbol name without loading the whole file.
-- `write_file`: writes complete files inside the workspace.
+- `create_file`: creates new files only.
+- `replace_symbol`, `replace_lines`, `insert_lines`: focused write tools for existing files.
+- `write_file`: legacy full-file writer; hidden from normal edit prompts and blocked from overwriting existing files in edit/refactor/repair mode.
 - `search`: searches with `rg`.
 - `bash`: runs shell commands with timeout and output compression.
 - `diff_patch`: applies unified diffs via `git apply`.

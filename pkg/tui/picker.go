@@ -179,6 +179,7 @@ func ApprovalPicker(current string) PickerModal {
 	return NewPicker("Approval Mode", "approval", current, []PickerOption{
 		{Value: "auto", Label: "Auto", Description: "approve safe, block risky"},
 		{Value: "ask", Label: "Ask", Description: "prompt before risky tools"},
+		{Value: "always", Label: "Always", Description: "allow tools without prompts"},
 		{Value: "never", Label: "Never", Description: "block all risky tools"},
 	})
 }

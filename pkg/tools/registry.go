@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -51,8 +52,14 @@ func NewDefaultRegistry() *Registry {
 		BashRunner{},
 		ListFiles{},
 		FileReader{},
+		FileOutline{},
+		SymbolReader{},
 		GoSymbolReader{},
 		FileWriter{},
+		FileCreator{},
+		ReplaceLines{},
+		InsertLines{},
+		ReplaceSymbol{},
 		Search{},
 		DiffPreview{},
 		DiffPatcher{},
@@ -82,7 +89,9 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 	names := map[string]bool{
 		"project_map":  true,
 		"search":       true,
+		"file_outline": true,
 		"read_file":    true,
+		"read_symbol":  true,
 		"git_status":   true,
 		"policy_check": true,
 	}
@@ -95,7 +104,10 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 	if mentionsEdit(task) {
 		names["diff_patch"] = true
 		names["diff_preview"] = true
-		names["write_file"] = true
+		names["insert_lines"] = true
+		names["replace_lines"] = true
+		names["replace_symbol"] = true
+		names["create_file"] = true
 		names["read_go_symbol"] = true
 		names["bash"] = true
 		names["git_diff"] = true
@@ -106,7 +118,11 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 		delete(names, "bash")
 		delete(names, "diff_patch")
 		delete(names, "diff_preview")
+		delete(names, "create_file")
 		delete(names, "git_diff")
+		delete(names, "insert_lines")
+		delete(names, "replace_lines")
+		delete(names, "replace_symbol")
 		delete(names, "write_file")
 		delete(names, "workspace_checkpoint")
 		delete(names, "workspace_restore")
@@ -121,11 +137,19 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 		names["bash"] = true
 		if len(contextFiles) > 0 {
 			names["diff_patch"] = true
+			names["insert_lines"] = true
+			names["replace_lines"] = true
+			names["replace_symbol"] = true
+			names["create_file"] = true
 			names["workspace_checkpoint"] = true
 		}
 	case "edit":
 		if len(contextFiles) == 0 {
+			delete(names, "create_file")
 			delete(names, "diff_patch")
+			delete(names, "insert_lines")
+			delete(names, "replace_lines")
+			delete(names, "replace_symbol")
 			delete(names, "write_file")
 		}
 	}
@@ -162,6 +186,9 @@ func (r *Registry) RunWithPolicy(ctx context.Context, cwd string, sandbox string
 	if err := enforceSandbox(sandbox, call); err != nil {
 		return Result{Output: err.Error()}, err
 	}
+	if err := enforceWriteToolUsage(cwd, mode, call); err != nil {
+		return Result{Output: err.Error()}, err
+	}
 	return tool.Run(ctx, Invocation{CWD: cwd, Sandbox: sandbox, Mode: mode, ContextFiles: contextFiles, Args: call.Arguments})
 }
 
@@ -190,15 +217,15 @@ func enforceMode(mode string, contextFiles []string, call llm.ToolCall) error {
 }
 
 func isWriteTool(name string) bool {
-	return name == "write_file" || name == "diff_patch" || name == "workspace_restore" || name == "bash"
+	return name == "write_file" || name == "create_file" || name == "diff_patch" || name == "replace_lines" || name == "insert_lines" || name == "replace_symbol" || name == "workspace_restore" || name == "bash"
 }
 
 func isFileWriteTool(name string) bool {
-	return name == "write_file" || name == "diff_patch"
+	return name == "write_file" || name == "create_file" || name == "diff_patch" || name == "replace_lines" || name == "insert_lines" || name == "replace_symbol"
 }
 
 func primaryWritePath(call llm.ToolCall) string {
-	if call.Name == "write_file" {
+	if call.Name == "write_file" || call.Name == "create_file" || call.Name == "replace_lines" || call.Name == "insert_lines" || call.Name == "replace_symbol" {
 		path, _ := call.Arguments["path"].(string)
 		return path
 	}
@@ -229,10 +256,31 @@ func pathAllowed(path string, contextFiles []string) bool {
 	return false
 }
 
+func enforceWriteToolUsage(cwd, mode string, call llm.ToolCall) error {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if call.Name != "write_file" || (mode != "edit" && mode != "refactor" && mode != "repair") {
+		return nil
+	}
+	path, _ := call.Arguments["path"].(string)
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	target, err := safeWorkspacePath(cwd, path)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(target); err == nil {
+		return fmt.Errorf("write_file refuses to overwrite existing file %s in %s mode; use replace_symbol, replace_lines, insert_lines, or diff_patch", path, mode)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func enforceSandbox(sandbox string, call llm.ToolCall) error {
 	profile := policy.NormalizeSandbox(sandbox)
 	switch call.Name {
-	case "write_file", "diff_patch", "workspace_restore":
+	case "write_file", "create_file", "diff_patch", "replace_lines", "insert_lines", "replace_symbol", "workspace_restore":
 		if profile == policy.SandboxReadOnly {
 			return fmt.Errorf("sandbox %s blocks %s", profile, call.Name)
 		}
@@ -280,7 +328,7 @@ func containsAny(text string, needles []string) bool {
 
 func RequiresApproval(name string) bool {
 	switch name {
-	case "bash", "write_file", "diff_patch", "workspace_restore":
+	case "bash", "write_file", "create_file", "diff_patch", "replace_lines", "insert_lines", "replace_symbol", "workspace_restore":
 		return true
 	default:
 		return false

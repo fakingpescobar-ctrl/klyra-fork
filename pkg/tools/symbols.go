@@ -17,7 +17,7 @@ type GoSymbolReader struct{}
 func (GoSymbolReader) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        "read_go_symbol",
-		Description: "Read a specific Go function, method, type, var, or const declaration by name without loading the whole file.",
+		Description: "Read one Go declaration by name without loading the whole file.",
 		Parameters: objectSchema(map[string]any{
 			"path":   stringProperty("Relative Go file path."),
 			"symbol": stringProperty("Symbol name. Methods can be Type.Method or Method."),

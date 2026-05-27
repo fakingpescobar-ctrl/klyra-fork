@@ -83,7 +83,7 @@ type FileReader struct{}
 func (FileReader) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        "read_file",
-		Description: "Read a workspace file with optional line slicing.",
+		Description: "Read a file slice. Prefer file_outline/read_symbol first; keep slices near 100 lines.",
 		Parameters: objectSchema(map[string]any{
 			"path":       stringProperty("Relative file path."),
 			"start_line": integerProperty("1-based start line.", 1),
@@ -137,7 +137,7 @@ type FileWriter struct{}
 func (FileWriter) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        "write_file",
-		Description: "Write a complete workspace file. Prefer diff_patch for edits to existing files.",
+		Description: "Legacy full-file writer. Prefer create_file for new files and focused edit tools for existing files.",
 		Parameters: objectSchema(map[string]any{
 			"path":    stringProperty("Relative file path."),
 			"content": stringProperty("Complete file content."),
@@ -165,4 +165,44 @@ func (FileWriter) Run(_ context.Context, inv Invocation) (Result, error) {
 		return Result{}, err
 	}
 	return Result{Output: fmt.Sprintf("wrote %s (%d bytes)", requestedPath, len(content))}, nil
+}
+
+type FileCreator struct{}
+
+func (FileCreator) Spec() llm.ToolSpec {
+	return llm.ToolSpec{
+		Name:        "create_file",
+		Description: "Create a new file only. Fails if the path already exists.",
+		Parameters: objectSchema(map[string]any{
+			"path":    stringProperty("Relative file path."),
+			"content": stringProperty("Complete new file content."),
+		}, "path", "content"),
+	}
+}
+
+func (FileCreator) Run(_ context.Context, inv Invocation) (Result, error) {
+	requestedPath, err := stringArg(inv.Args, "path")
+	if err != nil {
+		return Result{}, err
+	}
+	content, err := stringArg(inv.Args, "content")
+	if err != nil {
+		return Result{}, err
+	}
+	target, err := safeWorkspacePath(inv.CWD, requestedPath)
+	if err != nil {
+		return Result{}, err
+	}
+	if _, err := os.Stat(target); err == nil {
+		return Result{}, fmt.Errorf("create_file refuses to overwrite existing file %s; use replace_symbol, replace_lines, insert_lines, or diff_patch", requestedPath)
+	} else if !os.IsNotExist(err) {
+		return Result{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return Result{}, err
+	}
+	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+		return Result{}, err
+	}
+	return Result{Output: fmt.Sprintf("created %s (%d bytes)", requestedPath, len(content))}, nil
 }

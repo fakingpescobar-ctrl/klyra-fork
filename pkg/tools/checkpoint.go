@@ -18,7 +18,7 @@ type WorkspaceCheckpoint struct{}
 func (WorkspaceCheckpoint) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        "workspace_checkpoint",
-		Description: "Create a workspace checkpoint under .agentcli/checkpoints before risky edits.",
+		Description: "Create a workspace checkpoint before risky edits.",
 		Parameters: objectSchema(map[string]any{
 			"id": stringProperty("Optional checkpoint id."),
 		}),
@@ -50,7 +50,7 @@ type WorkspaceRestore struct{}
 func (WorkspaceRestore) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        "workspace_restore",
-		Description: "Restore files from a workspace checkpoint. This overwrites matching files but does not delete newer files.",
+		Description: "Restore files from a workspace checkpoint; overwrites matching files.",
 		Parameters: objectSchema(map[string]any{
 			"id": stringProperty("Checkpoint id."),
 		}, "id"),
