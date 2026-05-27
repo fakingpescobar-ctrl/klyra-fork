@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -69,6 +70,91 @@ func TestOpenAIProviderParsesToolCalls(t *testing.T) {
 	}
 	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].Arguments["path"] != "main.go" {
 		t.Fatalf("tool call was not parsed: %+v", resp.ToolCalls)
+	}
+}
+
+func TestOpenAIProviderTreatsPrivateIPEndpointsAsLocal(t *testing.T) {
+	provider, err := NewOpenAIProvider("", "http://10.171.251.1:1234/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !provider.omitStreamOptions || !provider.retryTransient {
+		t.Fatalf("expected private IP endpoint to use local compatibility settings: %+v", provider)
+	}
+}
+
+func TestOpenAIProviderRetriesTransientLocalCompleteError(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAIProvider("", server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := provider.Complete(context.Background(), Request{
+		Model:    "local-model",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if calls != 2 {
+		t.Fatalf("expected one retry, got %d calls", calls)
+	}
+}
+
+func TestOpenAIProviderRetriesTransientLocalStreamBeforeOutput(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"ok"}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAIProvider("", server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deltas strings.Builder
+	resp, err := provider.Stream(context.Background(), Request{
+		Model:    "local-model",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	}, func(event StreamEvent) error {
+		deltas.WriteString(event.Delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != "ok" || deltas.String() != "ok" {
+		t.Fatalf("unexpected stream response=%q deltas=%q", resp.Content, deltas.String())
+	}
+	if calls != 2 {
+		t.Fatalf("expected one stream retry, got %d calls", calls)
 	}
 }
 
