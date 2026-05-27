@@ -636,7 +636,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			m.lines = append(m.lines, "")
-			m.lines = append(m.lines, "error: "+msg.err.Error())
+			if strings.Contains(msg.err.Error(), "stopped after") {
+				m.lines = append(m.lines, "system: "+msg.err.Error())
+			} else {
+				m.lines = append(m.lines, "error: "+msg.err.Error())
+			}
 		}
 
 		outText := strings.TrimSpace(msg.output)

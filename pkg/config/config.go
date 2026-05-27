@@ -64,7 +64,7 @@ func Default() Config {
 		Provider:               "mock",
 		Model:                  "mock-agent",
 		BaseURLs:               map[string]string{},
-		MaxSteps:               8,
+		MaxSteps:               20,
 		MaxMessages:            40,
 		MaxContext:             24000,
 		MaxInstructions:        12000,
@@ -86,7 +86,7 @@ func Default() Config {
 			},
 			"ollama": {
 				Provider:     "ollama",
-				MaxSteps:     12,
+				MaxSteps:     20,
 				MaxContext:   32000,
 				MaxOutput:    4096,
 				ApprovalMode: "ask",
@@ -94,7 +94,7 @@ func Default() Config {
 			},
 			"anthropic": {
 				Provider:     "anthropic",
-				MaxSteps:     12,
+				MaxSteps:     20,
 				MaxContext:   32000,
 				MaxOutput:    4096,
 				ApprovalMode: "ask",
@@ -102,7 +102,7 @@ func Default() Config {
 			},
 			"gemini": {
 				Provider:     "gemini",
-				MaxSteps:     12,
+				MaxSteps:     20,
 				MaxContext:   32000,
 				MaxOutput:    4096,
 				ApprovalMode: "ask",
@@ -111,7 +111,7 @@ func Default() Config {
 			"coding": {
 				Provider:     "openai",
 				Reasoning:    "low",
-				MaxSteps:     12,
+				MaxSteps:     20,
 				MaxOutput:    4096,
 				ApprovalMode: "ask",
 				Sandbox:      "workspace-write",
@@ -119,7 +119,7 @@ func Default() Config {
 			"deep": {
 				Provider:     "openai",
 				Reasoning:    "medium",
-				MaxSteps:     20,
+				MaxSteps:     30,
 				MaxContext:   64000,
 				MaxOutput:    8192,
 				ApprovalMode: "ask",

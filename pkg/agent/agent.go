@@ -98,7 +98,7 @@ func New(cfg Config) (*Agent, error) {
 		cfg.Tools = tools.NewDefaultRegistry()
 	}
 	if cfg.MaxSteps <= 0 {
-		cfg.MaxSteps = 8
+		cfg.MaxSteps = 20
 	}
 	if cfg.MaxMessages <= 0 {
 		cfg.MaxMessages = 40
