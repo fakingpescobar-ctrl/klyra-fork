@@ -101,6 +101,46 @@ func TestAgentSuppressesRepeatedFailedToolCall(t *testing.T) {
 	}
 }
 
+func TestAgentAssignsMissingToolCallID(t *testing.T) {
+	provider := &scriptedProvider{
+		responses: []llm.Response{
+			{
+				Content: "checking",
+				ToolCalls: []llm.ToolCall{{
+					Name:      "file_outline",
+					Arguments: map[string]any{"path": "README.md"},
+				}},
+			},
+			{Content: "done"},
+		},
+	}
+	agent, err := New(Config{
+		CWD:      t.TempDir(),
+		Provider: provider,
+		Tools:    tools.NewDefaultRegistry(),
+		Output:   io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.RunConversation(context.Background(), nil, "what is in README.md?"); err != nil {
+		t.Fatal(err)
+	}
+	messages := provider.requests[1].Messages
+	var assistantCallID, toolCallID string
+	for _, msg := range messages {
+		if msg.Role == llm.RoleAssistant && len(msg.ToolCalls) > 0 {
+			assistantCallID = msg.ToolCalls[0].ID
+		}
+		if msg.Role == llm.RoleTool {
+			toolCallID = msg.ToolCallID
+		}
+	}
+	if assistantCallID == "" || toolCallID == "" || assistantCallID != toolCallID {
+		t.Fatalf("expected generated matching tool call ids, assistant=%q tool=%q messages=%+v", assistantCallID, toolCallID, messages)
+	}
+}
+
 func TestDefaultSystemMessageTellsModelToChangeStrategyAfterToolFailure(t *testing.T) {
 	system := defaultSystemMessage()
 	if !strings.Contains(system, "do not repeat the same failed call") || !strings.Contains(system, "create_file and include a short description") {
@@ -170,6 +210,9 @@ func TestAgentLoadsProjectInstructionsIntoSystemPrompt(t *testing.T) {
 	system := provider.requests[0].Messages[0]
 	if system.Role != llm.RoleSystem || !strings.Contains(system.Content, "Source: AGENTS.md") || !strings.Contains(system.Content, "Use table-driven tests.") {
 		t.Fatalf("project instructions were not loaded into system prompt: %+v", provider.requests[0].Messages)
+	}
+	if !strings.Contains(system.Content, "Current time: ") {
+		t.Fatalf("current time was not injected into system prompt: %s", system.Content)
 	}
 }
 

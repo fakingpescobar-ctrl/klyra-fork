@@ -8,6 +8,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"klyra/pkg/cockpit"
 	contextmgr "klyra/pkg/context"
@@ -203,6 +204,7 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 	if cockpitErr == nil && cockpitSnapshot.Enabled && cockpitSnapshot.Injected && len(cockpitSnapshot.Cards) > 0 {
 		systemMessage = strings.TrimSpace(systemMessage) + "\n\nContext cockpit fact cards. Use these as a compact starting slice, then verify with tools:\n" + cockpitSnapshot.PromptText()
 	}
+	systemMessage = withCurrentTime(systemMessage, time.Now())
 
 	window := contextmgr.NewBudgetedWindow(a.cfg.MaxMessages, a.cfg.MaxContext)
 	window.Add(llm.Message{Role: llm.RoleSystem, Content: systemMessage})
@@ -251,6 +253,7 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 		}
 		lastUsage = mergeUsage(lastUsage, resp.Usage)
 
+		resp.ToolCalls = ensureToolCallIDs(resp.ToolCalls, step)
 		if strings.TrimSpace(resp.Content) != "" || len(resp.ToolCalls) > 0 {
 			final = strings.TrimSpace(resp.Content)
 			if final != "" && !streamed {
@@ -495,6 +498,26 @@ func toolObservation(call llm.ToolCall, result tools.Result, runErr error) strin
 	return string(data)
 }
 
+func ensureToolCallIDs(calls []llm.ToolCall, step int) []llm.ToolCall {
+	if len(calls) == 0 {
+		return calls
+	}
+	out := append([]llm.ToolCall(nil), calls...)
+	seen := map[string]bool{}
+	for i := range out {
+		id := strings.TrimSpace(out[i].ID)
+		if id == "" || seen[id] {
+			id = fmt.Sprintf("call-%d-%d", step, i+1)
+		}
+		for seen[id] {
+			id += "-x"
+		}
+		out[i].ID = id
+		seen[id] = true
+	}
+	return out
+}
+
 func toolCallSignature(call llm.ToolCall) string {
 	data, err := json.Marshal(call.Arguments)
 	if err != nil {
@@ -583,6 +606,10 @@ func withSkills(base string, loaded skills.Result) string {
 		builder.WriteString("\n\nSome skills were truncated by the configured budget.")
 	}
 	return builder.String()
+}
+
+func withCurrentTime(base string, now time.Time) string {
+	return strings.TrimSpace(base) + "\n\nCurrent time: " + now.Format(time.RFC3339)
 }
 
 func sanitizeMessagesForStorage(messages []llm.Message) []llm.Message {
