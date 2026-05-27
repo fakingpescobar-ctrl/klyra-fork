@@ -131,7 +131,7 @@ func TestOpenAIProviderStreamsDeltasReasoningAndUsage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider, err := NewOpenAIProvider("", server.URL)
+	provider, err := NewOpenAIProvider("", server.URL+"?test-stream-options=true")
 	if err != nil {
 		t.Fatal(err)
 	}

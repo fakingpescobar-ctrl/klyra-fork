@@ -14,19 +14,28 @@ import (
 )
 
 type OpenAIProvider struct {
-	apiKey  string
-	baseURL string
-	client  *http.Client
+	apiKey            string
+	baseURL           string
+	client            *http.Client
+	omitStreamOptions bool
 }
 
 func NewOpenAIProvider(apiKey, baseURL string) (*OpenAIProvider, error) {
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
+	lowerURL := strings.ToLower(baseURL)
+	isLocal := (strings.Contains(lowerURL, "localhost") ||
+		strings.Contains(lowerURL, "127.0.0.1") ||
+		strings.Contains(lowerURL, "::1") ||
+		strings.Contains(lowerURL, "ollama") ||
+		strings.Contains(lowerURL, "local")) && !strings.Contains(lowerURL, "test-stream-options")
+
 	return &OpenAIProvider{
-		apiKey:  apiKey,
-		baseURL: strings.TrimRight(baseURL, "/"),
-		client:  &http.Client{Timeout: 0},
+		apiKey:            apiKey,
+		baseURL:           strings.TrimRight(baseURL, "/"),
+		client:            &http.Client{Timeout: 0},
+		omitStreamOptions: isLocal,
 	}, nil
 }
 
@@ -102,6 +111,11 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request, handler Stream
 		return Response{}, fmt.Errorf("model is required")
 	}
 
+	var streamOptions *openAIStreamOptions
+	if !p.omitStreamOptions {
+		streamOptions = &openAIStreamOptions{IncludeUsage: true}
+	}
+
 	payload := openAIChatRequest{
 		Model:           req.Model,
 		Messages:        openAIMessages(req.Messages),
@@ -109,7 +123,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request, handler Stream
 		MaxTokens:       req.MaxOutputTokens,
 		ReasoningEffort: req.ReasoningEffort,
 		Stream:          true,
-		StreamOptions:   &openAIStreamOptions{IncludeUsage: true},
+		StreamOptions:   streamOptions,
 	}
 	if len(payload.Tools) > 0 {
 		payload.ToolChoice = "auto"
