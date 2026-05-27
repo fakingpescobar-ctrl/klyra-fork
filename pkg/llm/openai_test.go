@@ -190,6 +190,36 @@ func TestOpenAIProviderStopsOnLocalStreamIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestOpenAIProviderReportsPartialStreamWithoutDoneMarker(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"partial answer"}}]}`+"\n\n")
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAIProvider("", server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deltas strings.Builder
+	resp, err := provider.Stream(context.Background(), Request{
+		Model:    "local-model",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	}, func(event StreamEvent) error {
+		deltas.WriteString(event.Delta)
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected incomplete stream error")
+	}
+	if resp.Content != "partial answer" || deltas.String() != "partial answer" {
+		t.Fatalf("expected partial content to be preserved, resp=%q deltas=%q", resp.Content, deltas.String())
+	}
+	if !strings.Contains(err.Error(), "ended without done marker") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestOpenAIMessagesIncludeAssistantToolCalls(t *testing.T) {
 	messages := openAIMessages([]Message{{
 		Role:    RoleAssistant,

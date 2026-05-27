@@ -389,6 +389,7 @@ func readOpenAIChatStream(ctx context.Context, reader io.ReadCloser, idleTimeout
 	pendingContent := ""
 	toolCalls := map[int]*openAIStreamToolCall{}
 	var scanErr error
+	completed := false
 	for {
 		item, err := nextOpenAIStreamLine(ctx, reader, lines, idleTimeout)
 		if err != nil {
@@ -408,6 +409,7 @@ func readOpenAIChatStream(ctx context.Context, reader io.ReadCloser, idleTimeout
 			continue
 		}
 		if data == "[DONE]" {
+			completed = true
 			break
 		}
 		var chunk openAIChatStreamChunk
@@ -430,6 +432,9 @@ func readOpenAIChatStream(ctx context.Context, reader io.ReadCloser, idleTimeout
 			}
 		}
 		for _, choice := range chunk.Choices {
+			if strings.TrimSpace(choice.FinishReason) != "" {
+				completed = true
+			}
 			delta := choice.Delta
 			if reasoning := firstNonEmpty(delta.ReasoningContent, delta.Reasoning, delta.Thinking); reasoning != "" && handler != nil {
 				if err := handler(StreamEvent{Reasoning: reasoning}); err != nil {
@@ -446,6 +451,9 @@ func readOpenAIChatStream(ctx context.Context, reader io.ReadCloser, idleTimeout
 			}
 			accumulateOpenAIStreamToolCalls(toolCalls, delta.ToolCalls)
 		}
+	}
+	if scanErr == nil && !completed {
+		scanErr = fmt.Errorf("openai-compatible stream ended without done marker; response may be incomplete")
 	}
 	if pendingContent != "" {
 		if inThinkBlock {
@@ -470,7 +478,7 @@ func readOpenAIChatStream(ctx context.Context, reader io.ReadCloser, idleTimeout
 				Content:   errContent,
 				ToolCalls: errCalls,
 				Usage:     usage,
-			}, nil
+			}, scanErr
 		}
 		return Response{}, scanErr
 	}
