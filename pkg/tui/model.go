@@ -308,13 +308,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "pgdn":
 			m.viewport.PageDown()
 			return m, nil
-		case "ctrl+up", "shift+up":
+		case "shift+up":
 			m.viewport.LineUp(1)
 			return m, nil
-		case "ctrl+down", "shift+down":
+		case "shift+down":
 			m.viewport.LineDown(1)
 			return m, nil
-		case "up", "shift+tab":
+		case "up":
 			if len(m.filteredCmds) > 0 {
 				m.selectedCmdIdx--
 				if m.selectedCmdIdx < 0 {
@@ -322,7 +322,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			if msg.String() == "up" && len(m.history) > 0 {
+			m.viewport.LineUp(1)
+			return m, nil
+		case "shift+tab":
+			if len(m.filteredCmds) > 0 {
+				m.selectedCmdIdx--
+				if m.selectedCmdIdx < 0 {
+					m.selectedCmdIdx = len(m.filteredCmds) - 1
+				}
+				return m, nil
+			}
+		case "down":
+			if len(m.filteredCmds) > 0 {
+				m.selectedCmdIdx++
+				if m.selectedCmdIdx >= len(m.filteredCmds) {
+					m.selectedCmdIdx = 0
+				}
+				return m, nil
+			}
+			m.viewport.LineDown(1)
+			return m, nil
+		case "tab":
+			if len(m.filteredCmds) > 0 {
+				m.selectedCmdIdx++
+				if m.selectedCmdIdx >= len(m.filteredCmds) {
+					m.selectedCmdIdx = 0
+				}
+				return m, nil
+			}
+		case "ctrl+up", "ctrl+p":
+			if len(m.history) > 0 {
 				if m.historyIdx == len(m.history) {
 					m.tempInput = m.input.Value()
 				}
@@ -334,15 +363,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input.SetCursor(len(m.input.Value()))
 				return m, nil
 			}
-		case "down", "tab":
-			if len(m.filteredCmds) > 0 {
-				m.selectedCmdIdx++
-				if m.selectedCmdIdx >= len(m.filteredCmds) {
-					m.selectedCmdIdx = 0
-				}
-				return m, nil
-			}
-			if msg.String() == "down" && len(m.history) > 0 {
+		case "ctrl+down", "ctrl+n":
+			if len(m.history) > 0 {
 				m.historyIdx++
 				if m.historyIdx > len(m.history) {
 					m.historyIdx = len(m.history)

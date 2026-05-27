@@ -117,8 +117,9 @@ func (h HelpModal) View(termWidth, termHeight int) string {
 	allLines = append(allLines, firstCatTitleStyle.Render("⌨  Keyboard Shortcuts"))
 	allLines = append(allLines, fmt.Sprintf("  %s  %s", kbdStyle.Render("F2 / Ctrl+S"), cmdDescStyle.Render("Open settings panel")))
 	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("Ctrl+C"), cmdDescStyle.Render("Exit")))
-	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("↑ / ↓ "), cmdDescStyle.Render("Navigate autocomplete / modals")))
-	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("Tab   "), cmdDescStyle.Render("Next field in settings")))
+	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("↑ / ↓ "), cmdDescStyle.Render("Scroll chat history / Navigate modals")))
+	allLines = append(allLines, fmt.Sprintf("  %s %s", kbdStyle.Render("Ctrl+↑/↓ / Ctrl+P/N"), cmdDescStyle.Render("Navigate command history")))
+	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("Tab   "), cmdDescStyle.Render("Next field in settings / Autocomplete")))
 	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("F3    "), cmdDescStyle.Render("Toggle Context Debugger")))
 	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("F4    "), cmdDescStyle.Render("Toggle Model Reasoning (Thoughts)")))
 
