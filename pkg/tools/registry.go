@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"agentcli/pkg/llm"
-	"agentcli/pkg/policy"
+	"klyra/pkg/llm"
+	"klyra/pkg/policy"
 )
 
 type Invocation struct {

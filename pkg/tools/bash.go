@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"time"
 
-	"agentcli/pkg/llm"
+	"klyra/pkg/llm"
 )
 
 type BashRunner struct{}

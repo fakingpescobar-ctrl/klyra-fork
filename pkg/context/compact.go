@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"agentcli/pkg/llm"
+	"klyra/pkg/llm"
 )
 
 type PackStats struct {

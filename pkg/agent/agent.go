@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"agentcli/pkg/cockpit"
-	contextmgr "agentcli/pkg/context"
-	"agentcli/pkg/instructions"
-	"agentcli/pkg/llm"
-	"agentcli/pkg/policy"
-	"agentcli/pkg/router"
-	"agentcli/pkg/tools"
+	"klyra/pkg/cockpit"
+	contextmgr "klyra/pkg/context"
+	"klyra/pkg/instructions"
+	"klyra/pkg/llm"
+	"klyra/pkg/policy"
+	"klyra/pkg/router"
+	"klyra/pkg/tools"
 )
 
 type Config struct {

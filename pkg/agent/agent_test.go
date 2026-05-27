@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"agentcli/pkg/llm"
-	"agentcli/pkg/tools"
+	"klyra/pkg/llm"
+	"klyra/pkg/tools"
 )
 
 func TestAgentRunExecutesToolAndReturnsFinal(t *testing.T) {

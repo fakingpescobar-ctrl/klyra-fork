@@ -1,7 +1,7 @@
 package main
 
-import "agentcli/cmd/agentcli"
+import "klyra/cmd/klyra"
 
 func main() {
-	agentcli.Execute()
+	klyra.Execute()
 }

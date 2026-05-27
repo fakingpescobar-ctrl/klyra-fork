@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	contextmgr "agentcli/pkg/context"
-	"agentcli/pkg/instructions"
-	"agentcli/pkg/tools"
+	contextmgr "klyra/pkg/context"
+	"klyra/pkg/instructions"
+	"klyra/pkg/tools"
 )
 
 const (

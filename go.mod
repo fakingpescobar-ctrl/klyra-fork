@@ -1,4 +1,4 @@
-module agentcli
+module klyra
 
 go 1.26.2
 

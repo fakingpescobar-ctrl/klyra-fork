@@ -1,6 +1,6 @@
 package contextmgr
 
-import "agentcli/pkg/llm"
+import "klyra/pkg/llm"
 
 type Window struct {
 	maxMessages int

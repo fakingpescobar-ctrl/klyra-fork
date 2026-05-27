@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"agentcli/pkg/llm"
+	"klyra/pkg/llm"
 )
 
 type ListFiles struct{}

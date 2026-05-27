@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
-	"agentcli/pkg/llm"
-	"agentcli/pkg/policy"
+	"klyra/pkg/llm"
+	"klyra/pkg/policy"
 )
 
 type PolicyCheck struct{}

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"agentcli/pkg/llm"
+	"klyra/pkg/llm"
 )
 
 func TestPackMessagesAddsSummaryAndFitsBudget(t *testing.T) {

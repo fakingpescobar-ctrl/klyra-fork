@@ -3,7 +3,7 @@ package session
 import (
 	"testing"
 
-	"agentcli/pkg/llm"
+	"klyra/pkg/llm"
 )
 
 func TestStoreSaveLoadAndList(t *testing.T) {

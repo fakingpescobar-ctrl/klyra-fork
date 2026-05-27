@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 
-	"agentcli/pkg/llm"
+	"klyra/pkg/llm"
 )
 
 type GitStatus struct{}

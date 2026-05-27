@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"agentcli/pkg/llm"
+	"klyra/pkg/llm"
 )
 
 type GoSymbolReader struct{}

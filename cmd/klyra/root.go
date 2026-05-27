@@ -1,4 +1,4 @@
-package agentcli
+package klyra
 
 import (
 	"bufio"
@@ -18,17 +18,17 @@ import (
 	"sync"
 	"time"
 
-	"agentcli/internal/version"
-	"agentcli/pkg/agent"
-	"agentcli/pkg/cockpit"
-	appconfig "agentcli/pkg/config"
-	contextmgr "agentcli/pkg/context"
-	"agentcli/pkg/instructions"
-	"agentcli/pkg/llm"
-	"agentcli/pkg/policy"
-	"agentcli/pkg/session"
-	"agentcli/pkg/tools"
-	"agentcli/pkg/tui"
+	"klyra/internal/version"
+	"klyra/pkg/agent"
+	"klyra/pkg/cockpit"
+	appconfig "klyra/pkg/config"
+	contextmgr "klyra/pkg/context"
+	"klyra/pkg/instructions"
+	"klyra/pkg/llm"
+	"klyra/pkg/policy"
+	"klyra/pkg/session"
+	"klyra/pkg/tools"
+	"klyra/pkg/tui"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -79,7 +79,7 @@ func Execute() {
 func newRootCommand() *cobra.Command {
 	opts := options{}
 	root := &cobra.Command{
-		Use:     "agentcli",
+		Use:     "klyra",
 		Short:   "Agentic coding CLI",
 		Version: version.Version,
 	}
@@ -1459,14 +1459,14 @@ func newInstructionsCommand(opts *options) *cobra.Command {
 func newDoctorCommand(opts *options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
-		Short: "Check local runtime support for agentcli",
+		Short: "Check local runtime support for klyra",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			runtimeCfg, err := effectiveConfig(cmd, *opts)
 			if err != nil {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "agentcli: %s\n", version.Version)
+			fmt.Fprintf(out, "klyra: %s\n", version.Version)
 			fmt.Fprintf(out, "go: %s\n", runtime.Version())
 			fmt.Fprintf(out, "os/arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 			printExecutableStatus(out, "git")
@@ -1503,7 +1503,7 @@ func newDoctorCommand(opts *options) *cobra.Command {
 func newConfigCommand(opts *options) *cobra.Command {
 	configCmd := &cobra.Command{
 		Use:   "config",
-		Short: "Manage agentcli configuration",
+		Short: "Manage klyra configuration",
 	}
 	configCmd.AddCommand(&cobra.Command{
 		Use:   "init",

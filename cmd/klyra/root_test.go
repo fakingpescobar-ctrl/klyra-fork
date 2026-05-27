@@ -1,11 +1,11 @@
-package agentcli
+package klyra
 
 import (
 	"strings"
 	"testing"
 
-	appconfig "agentcli/pkg/config"
-	"agentcli/pkg/llm"
+	appconfig "klyra/pkg/config"
+	"klyra/pkg/llm"
 )
 
 func TestTUILinesFromMessagesRestoresAssistantReasoning(t *testing.T) {

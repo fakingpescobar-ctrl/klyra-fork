@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"agentcli/pkg/llm"
+	"klyra/pkg/llm"
 )
 
 func TestSpecsForTaskPrunesWriteToolsForInspection(t *testing.T) {
