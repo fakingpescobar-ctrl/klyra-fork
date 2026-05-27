@@ -458,6 +458,43 @@ func TestAgentRoutesStreamAndReasoningHandlers(t *testing.T) {
 	}
 }
 
+func TestAgentPromotesReasoningOnlyStreamToFinalContent(t *testing.T) {
+	provider := &streamedProvider{
+		reasoning: []string{"reasoning-only answer"},
+		response:  llm.Response{},
+	}
+	var streamed strings.Builder
+	agent, err := New(Config{
+		CWD:       t.TempDir(),
+		Provider:  provider,
+		Tools:     tools.NewDefaultRegistry(),
+		Stream:    true,
+		Output:    io.Discard,
+		MaxSteps:  1,
+		MaxOutput: 100,
+		StreamHandler: func(event llm.StreamEvent) error {
+			streamed.WriteString(event.Delta)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.RunConversation(context.Background(), nil, "say it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Final != "reasoning-only answer" {
+		t.Fatalf("expected reasoning-only stream to become final content, got %q", result.Final)
+	}
+	if streamed.String() != "reasoning-only answer" {
+		t.Fatalf("expected promoted answer to stream to UI, got %q", streamed.String())
+	}
+	if len(result.Messages) == 0 || result.Messages[len(result.Messages)-1].Role != llm.RoleAssistant {
+		t.Fatalf("expected promoted assistant message in history: %+v", result.Messages)
+	}
+}
+
 func TestAgentStoresStreamedReasoningOnAssistantMessage(t *testing.T) {
 	provider := &streamedProvider{
 		response:  llm.Response{Content: "hello"},

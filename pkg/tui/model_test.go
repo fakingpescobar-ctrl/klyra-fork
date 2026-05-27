@@ -675,6 +675,21 @@ func TestReasoningPersistsAboveStreamedResponse(t *testing.T) {
 	}
 }
 
+func TestReasoningOnlyStreamBecomesAnswerOnCompletion(t *testing.T) {
+	model := New(Config{})
+	model.busy = true
+	updated, _ := model.Update(ReasoningMsg("answer emitted as reasoning"))
+	m := updated.(Model)
+	updated, _ = m.Update(responseMsg{input: "hello", output: "", agentRun: true})
+	m = updated.(Model)
+	if modelLinesContain(m.lines, "thoughts:0:", "answer emitted as reasoning") {
+		t.Fatalf("reasoning-only answer should not remain only in thoughts: %#v", m.lines)
+	}
+	if !modelLinesContain(m.lines, "agent:", "answer emitted as reasoning") {
+		t.Fatalf("expected reasoning-only stream to be shown as answer: %#v", m.lines)
+	}
+}
+
 func TestMouseClickTogglesThoughts(t *testing.T) {
 	model := New(Config{
 		InitialLines: []string{"thoughts:0:## Plan\n\n- inspect files", "agent: done"},

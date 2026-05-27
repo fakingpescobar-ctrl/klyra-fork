@@ -2489,6 +2489,13 @@ func (m *Model) flushLiveAssistantSegment() {
 	if len(m.lines) > 0 && m.lines[len(m.lines)-1] != "" {
 		m.lines = append(m.lines, "")
 	}
+	if strings.TrimSpace(m.streamBuf) == "" && strings.TrimSpace(m.reasoningText) != "" {
+		m.appendAgentOutput(m.reasoningText)
+		m.streamBuf = ""
+		m.reasoningText = ""
+		m.reasonExpanded = false
+		return
+	}
 	m.appendThoughtsOutput(m.reasoningText, false)
 	m.appendAgentOutput(m.streamBuf)
 	m.streamBuf = ""

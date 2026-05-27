@@ -390,7 +390,18 @@ func (a *Agent) complete(ctx context.Context, req llm.Request) (llm.Response, bo
 		fmt.Fprintln(a.cfg.Output)
 	}
 	if reasoning.Len() > 0 {
-		resp.Reasoning = reasoning.String()
+		reasoningText := reasoning.String()
+		if strings.TrimSpace(resp.Content) == "" && len(resp.ToolCalls) == 0 {
+			resp.Content = reasoningText
+			if a.cfg.StreamHandler != nil {
+				if err := a.emitStreamEvent(llm.StreamEvent{Delta: reasoningText}); err != nil {
+					return resp, streamStarted, err
+				}
+				streamStarted = true
+			}
+		} else {
+			resp.Reasoning = reasoningText
+		}
 	}
 	return resp, streamStarted, err
 }
