@@ -310,7 +310,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseLeft:
 			if m.handleViewportClick(msg.Y) {
 				m.syncViewport(false)
-				return m, nil
+				return m, tea.ClearScreen
 			}
 		case tea.MouseWheelUp:
 			m.viewport.LineUp(3)
@@ -355,7 +355,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "f4":
 			m.toggleLatestThoughts()
 			m.syncViewport(true)
-			return m, nil
+			return m, tea.ClearScreen
 		case "f6":
 			m.copyMode = !m.copyMode
 			if m.copyMode {
@@ -371,12 +371,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "right", "l":
 			if m.toggleLatestThoughtsExpand(true) {
 				m.syncViewport(true)
-				return m, nil
+				return m, tea.ClearScreen
 			}
 		case "left", "h":
 			if m.toggleLatestThoughtsExpand(false) {
 				m.syncViewport(true)
-				return m, nil
+				return m, tea.ClearScreen
 			}
 		case "shift+up":
 			m.viewport.LineUp(1)
@@ -434,6 +434,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if value == "" {
 				if m.toggleLatestThoughts() {
 					m.syncViewport(false)
+					return m, tea.ClearScreen
 				}
 				return m, nil
 			}

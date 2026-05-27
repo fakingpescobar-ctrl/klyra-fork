@@ -44,6 +44,11 @@ func executeCmd(cmd tea.Cmd) tea.Msg {
 	return msg
 }
 
+func isClearScreenCmd(cmd tea.Cmd) bool {
+	msg := executeCmd(cmd)
+	return strings.Contains(fmt.Sprintf("%T", msg), "clearScreenMsg")
+}
+
 func TestViewIncludesMetadata(t *testing.T) {
 	model := New(Config{SessionID: "s1", Provider: "mock", Model: "mock-agent"})
 	view := model.View()
@@ -600,10 +605,25 @@ func TestMouseClickTogglesThoughts(t *testing.T) {
 	if clickY < 0 {
 		t.Fatalf("thoughts header not found in viewport:\n%s", model.View())
 	}
-	updated, _ := model.Update(tea.MouseMsg{Type: tea.MouseLeft, Y: clickY})
+	updated, cmd := model.Update(tea.MouseMsg{Type: tea.MouseLeft, Y: clickY})
 	m := updated.(Model)
+	if !isClearScreenCmd(cmd) {
+		t.Fatal("expected mouse thoughts toggle to force a clean repaint")
+	}
 	if !modelLinesContain(m.lines, "thoughts:1:", "## Plan") {
 		t.Fatalf("expected mouse click to expand thoughts: %#v", m.lines)
+	}
+}
+
+func TestThoughtsKeyboardToggleForcesCleanRepaint(t *testing.T) {
+	model := New(Config{InitialLines: []string{"thoughts:0:thinking", "agent: done"}})
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyF4})
+	m := updated.(Model)
+	if !isClearScreenCmd(cmd) {
+		t.Fatal("expected F4 thoughts toggle to force a clean repaint")
+	}
+	if !modelLinesContain(m.lines, "thoughts:1:", "thinking") {
+		t.Fatalf("expected thoughts to expand: %#v", m.lines)
 	}
 }
 
