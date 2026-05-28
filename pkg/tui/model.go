@@ -2602,7 +2602,7 @@ func (m Model) renderStatsLine(line string) []string {
 
 	var timeStr string
 	if durationVal != "" {
-		timeStr = timeStyle.Render("🕒 " + durationVal)
+		timeStr = timeStyle.Render(durationVal)
 	}
 	sep := sepStyle.Render("  •  ")
 
