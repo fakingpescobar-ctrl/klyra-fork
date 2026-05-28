@@ -35,7 +35,7 @@ func newOpenAIChatTransport(apiKey, baseURL string, retryTransient bool) openAIC
 	}
 	return openAIChatTransport{
 		apiKey:            strings.TrimSpace(apiKey),
-		baseURL:           strings.TrimRight(baseURL, "/"),
+		baseURL:           normalizeOpenAICompatibleBaseURL(baseURL),
 		client:            &http.Client{Timeout: 0},
 		streamIdleTimeout: openAIStreamIdleTimeout(retryTransient),
 		retry: openAIRetryPolicy{
@@ -45,6 +45,22 @@ func newOpenAIChatTransport(apiKey, baseURL string, retryTransient bool) openAIC
 			},
 		},
 	}
+}
+
+func normalizeOpenAICompatibleBaseURL(raw string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if trimmed == "" {
+		return trimmed
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return trimmed
+	}
+	if parsed.Path == "" || parsed.Path == "/" {
+		parsed.Path = "/v1"
+		return strings.TrimRight(parsed.String(), "/")
+	}
+	return trimmed
 }
 
 func openAIStreamIdleTimeout(localCompatible bool) time.Duration {

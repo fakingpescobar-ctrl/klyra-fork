@@ -84,6 +84,56 @@ func TestOpenAIProviderTreatsPrivateIPEndpointsAsLocal(t *testing.T) {
 	}
 }
 
+func TestOpenAIProviderNormalizesRootEndpointToV1(t *testing.T) {
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAIProvider("", server.URL+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Complete(context.Background(), Request{
+		Model:    "local-model",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capturedPath != "/v1/chat/completions" {
+		t.Fatalf("unexpected chat path: %s", capturedPath)
+	}
+}
+
+func TestOpenAIProviderDoesNotDuplicateV1Endpoint(t *testing.T) {
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAIProvider("", server.URL+"/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Complete(context.Background(), Request{
+		Model:    "local-model",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capturedPath != "/v1/chat/completions" {
+		t.Fatalf("unexpected chat path: %s", capturedPath)
+	}
+}
+
 func TestOpenAIProviderRetriesTransientLocalCompleteError(t *testing.T) {
 	var calls int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

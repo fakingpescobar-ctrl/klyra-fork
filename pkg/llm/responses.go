@@ -27,7 +27,7 @@ func NewResponsesProvider(apiKey, baseURL string) (*ResponsesProvider, error) {
 	}
 	return &ResponsesProvider{
 		apiKey:  apiKey,
-		baseURL: strings.TrimRight(baseURL, "/"),
+		baseURL: normalizeOpenAICompatibleBaseURL(baseURL),
 		client:  &http.Client{Timeout: 0},
 	}, nil
 }

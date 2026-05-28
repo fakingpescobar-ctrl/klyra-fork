@@ -12,8 +12,10 @@ import (
 
 func TestResponsesProviderParsesFunctionCallsAndUsage(t *testing.T) {
 	var captured responsesRequest
+	var capturedPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/responses" {
+		capturedPath = r.URL.Path
+		if r.URL.Path != "/v1/responses" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		if r.Header.Get("Authorization") != "Bearer test-key" {
@@ -68,6 +70,9 @@ func TestResponsesProviderParsesFunctionCallsAndUsage(t *testing.T) {
 	if captured.Model != "gpt-test" || captured.Instructions != "system prompt" {
 		t.Fatalf("unexpected request metadata: %+v", captured)
 	}
+	if capturedPath != "/v1/responses" {
+		t.Fatalf("unexpected responses path: %s", capturedPath)
+	}
 	if captured.MaxOutputTokens != 512 || captured.Reasoning == nil || captured.Reasoning.Effort != "low" {
 		t.Fatalf("generation controls were not sent: %+v", captured)
 	}
@@ -79,6 +84,31 @@ func TestResponsesProviderParsesFunctionCallsAndUsage(t *testing.T) {
 	}
 	if resp.Usage.CachedTokens != 40 || resp.Usage.ReasoningTokens != 5 || resp.Usage.TotalTokens != 112 {
 		t.Fatalf("usage was not parsed: %+v", resp.Usage)
+	}
+}
+
+func TestResponsesProviderDoesNotDuplicateV1Endpoint(t *testing.T) {
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_ok","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewResponsesProvider("test-key", server.URL+"/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Complete(context.Background(), Request{
+		Model:    "gpt-test",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capturedPath != "/v1/responses" {
+		t.Fatalf("unexpected responses path: %s", capturedPath)
 	}
 }
 
