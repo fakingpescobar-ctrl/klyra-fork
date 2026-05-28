@@ -1565,6 +1565,13 @@ func (m Model) renderApprovalModal() string {
 	if req.Reason != "" {
 		lines = append(lines, labelStyle.Render("reason: ")+valueStyle.Render(req.Reason))
 	}
+	if preview := formatApprovalArgs(req.Args, m.width-12); preview != "" {
+		lines = append(lines, "")
+		lines = append(lines, labelStyle.Render("arguments:"))
+		for _, line := range strings.Split(preview, "\n") {
+			lines = append(lines, "  "+line)
+		}
+	}
 	lines = append(lines, "")
 	lines = append(lines, keyStyle.Render("[Y] Approve")+"  "+keyRejectStyle.Render("[N] Reject"))
 
@@ -1574,6 +1581,69 @@ func (m Model) renderApprovalModal() string {
 		Foreground(colorText).
 		Padding(1, 2).
 		Render(strings.Join(lines, "\n"))
+}
+
+func formatApprovalArgs(args map[string]any, width int) string {
+	if len(args) == 0 {
+		return ""
+	}
+	if width <= 0 {
+		width = 96
+	}
+	if width > 140 {
+		width = 140
+	}
+	sanitized := sanitizeApprovalValue("", args)
+	var builder strings.Builder
+	encoder := json.NewEncoder(&builder)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(sanitized); err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(builder.String()), "\n")
+	const maxLines = 18
+	if len(lines) > maxLines {
+		lines = append(lines[:maxLines], fmt.Sprintf("... %d more line(s)", len(lines)-maxLines))
+	}
+	for i, line := range lines {
+		if len(line) > width {
+			lines[i] = line[:max(0, width-1)] + "…"
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func sanitizeApprovalValue(key string, value any) any {
+	lowerKey := strings.ToLower(key)
+	if strings.Contains(lowerKey, "key") ||
+		strings.Contains(lowerKey, "token") ||
+		strings.Contains(lowerKey, "secret") ||
+		strings.Contains(lowerKey, "password") ||
+		strings.Contains(lowerKey, "authorization") {
+		return "<redacted>"
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for k, v := range typed {
+			out[k] = sanitizeApprovalValue(k, v)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, v := range typed {
+			out[i] = sanitizeApprovalValue("", v)
+		}
+		return out
+	case string:
+		if len(typed) > 1200 {
+			return typed[:1200] + fmt.Sprintf("\n... truncated %d byte(s)", len(typed)-1200)
+		}
+		return typed
+	default:
+		return value
+	}
 }
 
 // ---------------------------------------------------------------------------

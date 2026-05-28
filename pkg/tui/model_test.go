@@ -401,14 +401,39 @@ func TestSettingsModalSectionsCollapsedByDefault(t *testing.T) {
 func TestApprovalPromptUsesKeys(t *testing.T) {
 	reply := make(chan bool, 1)
 	model := New(Config{})
-	updated, _ := model.Update(ApprovalRequestMsg{Tool: "write_file", Reply: reply})
+	updated, _ := model.Update(ApprovalRequestMsg{
+		Tool: "bash",
+		Args: map[string]any{
+			"command": "go test ./...",
+		},
+		Reply: reply,
+	})
 	view := updated.(Model).View()
-	if !strings.Contains(view, "Approval required") {
+	if !strings.Contains(view, "Approval required") || !strings.Contains(view, "go test ./...") {
 		t.Fatalf("approval prompt not rendered:\n%s", view)
 	}
 	updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	if !<-reply {
 		t.Fatal("expected approval")
+	}
+}
+
+func TestApprovalPromptRedactsSecrets(t *testing.T) {
+	model := New(Config{})
+	updated, _ := model.Update(ApprovalRequestMsg{
+		Tool: "fetch_url",
+		Args: map[string]any{
+			"url":     "https://example.test",
+			"api_key": "super-secret-value",
+		},
+		Reply: make(chan bool, 1),
+	})
+	view := updated.(Model).View()
+	if !strings.Contains(view, "https://example.test") || !strings.Contains(view, "<redacted>") {
+		t.Fatalf("approval prompt should show safe args and redaction:\n%s", view)
+	}
+	if strings.Contains(view, "super-secret-value") {
+		t.Fatalf("approval prompt leaked secret:\n%s", view)
 	}
 }
 
