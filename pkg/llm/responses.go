@@ -8,14 +8,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
 type ResponsesProvider struct {
-	apiKey  string
-	baseURL string
-	client  *http.Client
+	apiKey      string
+	baseURL     string
+	client      *http.Client
+	strictTools bool
 }
 
 func NewResponsesProvider(apiKey, baseURL string) (*ResponsesProvider, error) {
@@ -25,10 +28,12 @@ func NewResponsesProvider(apiKey, baseURL string) (*ResponsesProvider, error) {
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
+	baseURL = normalizeOpenAICompatibleBaseURL(baseURL)
 	return &ResponsesProvider{
-		apiKey:  apiKey,
-		baseURL: normalizeOpenAICompatibleBaseURL(baseURL),
-		client:  &http.Client{Timeout: 0},
+		apiKey:      apiKey,
+		baseURL:     baseURL,
+		client:      &http.Client{Timeout: 0},
+		strictTools: responsesStrictTools(baseURL),
 	}, nil
 }
 
@@ -41,7 +46,7 @@ func (p *ResponsesProvider) Complete(ctx context.Context, req Request) (Response
 		return Response{}, fmt.Errorf("model is required")
 	}
 
-	payload := newResponsesRequest(req, false)
+	payload := p.newResponsesRequest(req, false)
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -79,7 +84,7 @@ func (p *ResponsesProvider) Stream(ctx context.Context, req Request, handler Str
 		return Response{}, fmt.Errorf("model is required")
 	}
 
-	payload := newResponsesRequest(req, true)
+	payload := p.newResponsesRequest(req, true)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return Response{}, err
@@ -108,12 +113,12 @@ func (p *ResponsesProvider) Stream(ctx context.Context, req Request, handler Str
 	return readResponsesStream(httpResp.Body, handler)
 }
 
-func newResponsesRequest(req Request, stream bool) responsesRequest {
+func (p *ResponsesProvider) newResponsesRequest(req Request, stream bool) responsesRequest {
 	payload := responsesRequest{
 		Model:             req.Model,
 		Instructions:      systemInstructions(req.Messages),
 		Input:             responseInputItems(req.Messages),
-		Tools:             responseTools(req.Tools),
+		Tools:             responseTools(req.Tools, p.strictTools),
 		ToolChoice:        "auto",
 		Store:             req.Store,
 		Stream:            stream,
@@ -127,6 +132,24 @@ func newResponsesRequest(req Request, stream bool) responsesRequest {
 		payload.ToolChoice = ""
 	}
 	return payload
+}
+
+func newResponsesRequest(req Request, stream bool) responsesRequest {
+	return (&ResponsesProvider{strictTools: true}).newResponsesRequest(req, stream)
+}
+
+func responsesStrictTools(baseURL string) bool {
+	if raw := strings.TrimSpace(os.Getenv("KLYRA_RESPONSES_STRICT_TOOLS")); raw != "" {
+		if parsed, err := strconv.ParseBool(raw); err == nil {
+			return parsed
+		}
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "api.openai.com"
 }
 
 type responsesRequest struct {
@@ -390,7 +413,7 @@ func responseImageParts(attachments []Attachment) []responseContentPart {
 	return parts
 }
 
-func responseTools(specs []ToolSpec) []responseTool {
+func responseTools(specs []ToolSpec, strict bool) []responseTool {
 	out := make([]responseTool, 0, len(specs))
 	for _, spec := range specs {
 		out = append(out, responseTool{
@@ -398,7 +421,7 @@ func responseTools(specs []ToolSpec) []responseTool {
 			Name:        spec.Name,
 			Description: spec.Description,
 			Parameters:  spec.Parameters,
-			Strict:      true,
+			Strict:      strict,
 		})
 	}
 	return out

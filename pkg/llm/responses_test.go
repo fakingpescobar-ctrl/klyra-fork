@@ -76,7 +76,7 @@ func TestResponsesProviderParsesFunctionCallsAndUsage(t *testing.T) {
 	if captured.MaxOutputTokens != 512 || captured.Reasoning == nil || captured.Reasoning.Effort != "low" {
 		t.Fatalf("generation controls were not sent: %+v", captured)
 	}
-	if len(captured.Tools) != 1 || captured.Tools[0].Name != "project_map" || !captured.Tools[0].Strict {
+	if len(captured.Tools) != 1 || captured.Tools[0].Name != "project_map" || captured.Tools[0].Strict {
 		t.Fatalf("tool schema was not sent correctly: %+v", captured.Tools)
 	}
 	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].ID != "call_123" || resp.ToolCalls[0].Arguments["max_files"].(float64) != 20 {
@@ -109,6 +109,43 @@ func TestResponsesProviderDoesNotDuplicateV1Endpoint(t *testing.T) {
 	}
 	if capturedPath != "/v1/responses" {
 		t.Fatalf("unexpected responses path: %s", capturedPath)
+	}
+}
+
+func TestResponsesProviderUsesStrictToolsForOfficialOpenAI(t *testing.T) {
+	provider, err := NewResponsesProvider("test-key", "https://api.openai.com/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := provider.newResponsesRequest(Request{
+		Model:    "gpt-test",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+		Tools: []ToolSpec{{
+			Name:       "read_file",
+			Parameters: map[string]any{"type": "object", "additionalProperties": false},
+		}},
+	}, false)
+	if len(payload.Tools) != 1 || !payload.Tools[0].Strict {
+		t.Fatalf("expected official OpenAI endpoint to use strict tools: %+v", payload.Tools)
+	}
+}
+
+func TestResponsesProviderAllowsStrictToolOverride(t *testing.T) {
+	t.Setenv("KLYRA_RESPONSES_STRICT_TOOLS", "true")
+	provider, err := NewResponsesProvider("test-key", "https://example.test/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := provider.newResponsesRequest(Request{
+		Model:    "gpt-test",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+		Tools: []ToolSpec{{
+			Name:       "read_file",
+			Parameters: map[string]any{"type": "object", "additionalProperties": false},
+		}},
+	}, false)
+	if len(payload.Tools) != 1 || !payload.Tools[0].Strict {
+		t.Fatalf("expected strict tools override to apply: %+v", payload.Tools)
 	}
 }
 
