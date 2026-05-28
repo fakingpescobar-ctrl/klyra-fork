@@ -102,6 +102,25 @@ func TestResponseInputItemsIncludesFunctionCallOutputs(t *testing.T) {
 	}
 }
 
+func TestResponseInputItemsSerializesAssistantHistoryAsInputText(t *testing.T) {
+	items := responseInputItems([]Message{
+		{Role: RoleUser, Content: "first"},
+		{Role: RoleAssistant, Content: "answer"},
+		{Role: RoleUser, Content: "second"},
+	})
+	if len(items) != 3 {
+		t.Fatalf("expected conversation items, got %+v", items)
+	}
+	for i, item := range items {
+		if len(item.Content) != 1 {
+			t.Fatalf("expected one text part for item %d, got %+v", i, item)
+		}
+		if item.Content[0].Type != "input_text" {
+			t.Fatalf("history item %d used unsupported input content type %q", i, item.Content[0].Type)
+		}
+	}
+}
+
 func TestResponseInputItemsIncludesImages(t *testing.T) {
 	items := responseInputItems([]Message{
 		{

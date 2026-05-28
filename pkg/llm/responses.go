@@ -335,7 +335,7 @@ func responseInputItems(messages []Message) []responseInputItem {
 				content := []responseContentPart{}
 				if strings.TrimSpace(msg.Content) != "" {
 					content = append(content, responseContentPart{
-						Type: contentTypeForRole(msg.Role),
+						Type: "input_text",
 						Text: msg.Content,
 					})
 				}
@@ -388,13 +388,6 @@ func responseImageParts(attachments []Attachment) []responseContentPart {
 		})
 	}
 	return parts
-}
-
-func contentTypeForRole(role Role) string {
-	if role == RoleAssistant {
-		return "output_text"
-	}
-	return "input_text"
 }
 
 func responseTools(specs []ToolSpec) []responseTool {
