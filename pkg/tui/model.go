@@ -1924,7 +1924,7 @@ func (m Model) updateSettingsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // ---------------------------------------------------------------------------
 
 func (m Model) renderHeader() string {
-	width := max(50, m.width)
+	width := max(50, m.chatWidth())
 
 	// --- Logo (>< chevrons with gradient bar) ---
 	chevronStyle := lipgloss.NewStyle().Foreground(colorWhite).Bold(true)
@@ -1972,16 +1972,7 @@ func (m Model) renderHeader() string {
 	safetyBadge := pillBadge(safetyText, colorBadgeBg4, colorEmerald)
 
 	// Budget info
-	budgetParts := []string{
-		lipgloss.NewStyle().Foreground(colorMuted).Render("ctx ") + lipgloss.NewStyle().Foreground(colorDim).Render(formatNumber(m.maxContext)),
-		lipgloss.NewStyle().Foreground(colorMuted).Render("out ") + lipgloss.NewStyle().Foreground(colorDim).Render(formatNumber(m.maxOutput)),
-		lipgloss.NewStyle().Foreground(colorMuted).Render("cart ") + lipgloss.NewStyle().Foreground(colorDim).Render(fmt.Sprintf("%d", m.cartCount)),
-		lipgloss.NewStyle().Foreground(colorMuted).Render("session ") + lipgloss.NewStyle().Foreground(colorDim).Render(valueOr(m.sessionID, "ephemeral")),
-	}
-	if m.baseURL != "" {
-		budgetParts = append(budgetParts, lipgloss.NewStyle().Foreground(colorMuted).Render("endpoint ")+lipgloss.NewStyle().Foreground(colorDim).Render(shorten(m.baseURL, 24)))
-	}
-	budgets := strings.Join(budgetParts, lipgloss.NewStyle().Foreground(colorSeparator).Render(" · "))
+	budgets := m.renderHeaderBudgets(width - 2)
 
 	// Separator bar
 	barWidth := max(10, min(width-2, 90))
@@ -1996,11 +1987,52 @@ func (m Model) renderHeader() string {
 		"",
 		"  "+topLine,
 		"  "+badgeLine,
-		"  "+budgets+"  "+safetyBadge,
-		"  "+bar,
 	)
+	if lipgloss.Width("  "+budgets+"  "+safetyBadge) <= width {
+		result = append(result, "  "+budgets+"  "+safetyBadge)
+	} else {
+		result = append(result, "  "+budgets, "  "+safetyBadge)
+	}
+	result = append(result, "  "+bar)
 
 	return strings.Join(result, "\n")
+}
+
+func (m Model) renderHeaderBudgets(maxWidth int) string {
+	muted := lipgloss.NewStyle().Foreground(colorMuted)
+	dim := lipgloss.NewStyle().Foreground(colorDim)
+	sep := lipgloss.NewStyle().Foreground(colorSeparator).Render(" · ")
+
+	render := func(includeSession, includeEndpoint bool, endpointLimit int) string {
+		parts := []string{
+			muted.Render("ctx ") + dim.Render(formatNumber(m.maxContext)),
+			muted.Render("out ") + dim.Render(formatNumber(m.maxOutput)),
+			muted.Render("cart ") + dim.Render(fmt.Sprintf("%d", m.cartCount)),
+		}
+		if includeSession {
+			parts = append(parts, muted.Render("session ")+dim.Render(valueOr(m.sessionID, "ephemeral")))
+		}
+		if includeEndpoint && strings.TrimSpace(m.baseURL) != "" {
+			parts = append(parts, muted.Render("endpoint ")+dim.Render(shorten(m.baseURL, endpointLimit)))
+		}
+		return strings.Join(parts, sep)
+	}
+
+	if strings.TrimSpace(m.baseURL) != "" {
+		for limit := 24; limit >= 10; limit -= 2 {
+			budgets := render(true, true, limit)
+			if lipgloss.Width(budgets) <= maxWidth {
+				return budgets
+			}
+		}
+	}
+	for _, includeSession := range []bool{true, false} {
+		budgets := render(includeSession, false, 0)
+		if lipgloss.Width(budgets) <= maxWidth {
+			return budgets
+		}
+	}
+	return render(false, false, 0)
 }
 
 // ---------------------------------------------------------------------------

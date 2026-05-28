@@ -12,6 +12,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func executeCmd(cmd tea.Cmd) tea.Msg {
@@ -100,6 +101,45 @@ func TestSidebarCanBeHidden(t *testing.T) {
 	view := stripANSI(m.View())
 	if strings.Contains(view, "Klyra Sidebar") {
 		t.Fatalf("sidebar should be hidden:\n%s", view)
+	}
+}
+
+func TestSidebarViewFitsTerminalWidth(t *testing.T) {
+	model := New(Config{
+		SidebarFiles: []string{"README.md", "pkg/tui/model.go"},
+		SidebarDiff:  strings.Repeat("diff line with enough text to wrap if sidebar overflows\n", 8),
+		Provider:     "openai",
+		Model:        "gpt-5.5",
+		BaseURL:      "https://api.freemodel.dev/",
+		Reasoning:    "medium",
+		Sandbox:      "danger-full-access",
+		Approval:     "ask",
+		MaxContext:   60000,
+		MaxOutput:    40000,
+		SessionID:    "20260528-142542",
+	})
+	model.width = 120
+	model.height = 30
+	model.syncViewport(true)
+
+	if got, want := lipgloss.Width(model.renderSidebar(model.viewport.Height)), model.sidebarWidth(); got != want {
+		t.Fatalf("sidebar rendered width mismatch: got %d want %d", got, want)
+	}
+
+	for i, line := range model.buildFormattedLines() {
+		if width := lipgloss.Width(line); width > model.chatWidth() {
+			t.Fatalf("viewport content line %d overflows chat width: got %d want <= %d\n%s", i, width, model.chatWidth(), stripANSI(line))
+		}
+	}
+
+	view := model.View()
+	if got := lipgloss.Height(view); got != model.height {
+		t.Fatalf("view height mismatch with sidebar: got %d want %d", got, model.height)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > model.width {
+			t.Fatalf("line %d overflows terminal width: got %d want <= %d\n%s", i, width, model.width, stripANSI(line))
+		}
 	}
 }
 
