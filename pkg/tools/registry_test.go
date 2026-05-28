@@ -134,6 +134,24 @@ func TestEditModeAllowsProjectSkillCreateWithoutContextCart(t *testing.T) {
 	}
 }
 
+func TestEditModeAllowsProjectSkillBundleSupportFileWithoutContextCart(t *testing.T) {
+	dir := t.TempDir()
+	result, err := NewDefaultRegistry().RunWithPolicy(context.Background(), dir, "workspace-write", "edit", nil, llm.ToolCall{
+		Name: "create_file",
+		Arguments: map[string]any{
+			"path":        ".agentcli/skills/github-issues-summarizer/tools/fetch_issue.sh",
+			"content":     "#!/bin/sh\n",
+			"description": "support script for issue summary skill",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output == "" {
+		t.Fatal("expected create_file output")
+	}
+}
+
 func TestEditModeBlocksSmallWriteToolsOutsideContextCart(t *testing.T) {
 	_, err := NewDefaultRegistry().RunWithPolicy(context.Background(), t.TempDir(), "workspace-write", "edit", []string{"allowed.go"}, llm.ToolCall{
 		Name:      "replace_lines",

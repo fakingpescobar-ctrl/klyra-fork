@@ -223,7 +223,7 @@ func enforceMode(mode string, contextFiles []string, call llm.ToolCall) error {
 		}
 	case "edit":
 		if isFileWriteTool(call.Name) {
-			if call.Name == "create_file" && isProjectSkillPath(primaryWritePath(call)) {
+			if call.Name == "create_file" && isProjectSkillBundlePath(primaryWritePath(call)) {
 				return nil
 			}
 			if len(contextFiles) == 0 {
@@ -281,15 +281,26 @@ func pathAllowed(path string, contextFiles []string) bool {
 	return false
 }
 
-func isProjectSkillPath(path string) bool {
+func isProjectSkillBundlePath(path string) bool {
 	path = strings.TrimSpace(strings.ReplaceAll(path, "\\", "/"))
 	path = strings.TrimPrefix(path, "./")
 	path = strings.TrimPrefix(path, "/")
 	if path == "" || strings.Contains(path, "../") {
 		return false
 	}
-	if strings.HasPrefix(path, ".klyra/skills/") || strings.HasPrefix(path, ".agentcli/skills/") || strings.HasPrefix(path, "skills/") {
-		return strings.HasSuffix(path, ".md")
+	for _, prefix := range []string{".klyra/skills/", ".agentcli/skills/", "skills/"} {
+		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(path, prefix)
+		if rest == "" || strings.HasPrefix(rest, ".") {
+			return false
+		}
+		parts := strings.Split(rest, "/")
+		if len(parts) == 1 {
+			return strings.HasSuffix(parts[0], ".md")
+		}
+		return strings.EqualFold(parts[1], "SKILL.md") || len(parts) > 2
 	}
 	return false
 }

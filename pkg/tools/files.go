@@ -178,7 +178,7 @@ type FileCreator struct{}
 func (FileCreator) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        "create_file",
-		Description: "Create a new file only. Fails if the path already exists. Include description so Klyra can remember why the file exists.",
+		Description: "Create a new file only. Use directly when the user asks for a known new file; for skills, keep files under .klyra/skills/<name>/ or .agentcli/skills/<name>/.",
 		Parameters: objectSchema(map[string]any{
 			"path":        stringProperty("Relative file path."),
 			"content":     stringProperty("Complete new file content."),

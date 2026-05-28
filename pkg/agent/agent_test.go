@@ -143,7 +143,10 @@ func TestAgentAssignsMissingToolCallID(t *testing.T) {
 
 func TestDefaultSystemMessageTellsModelToChangeStrategyAfterToolFailure(t *testing.T) {
 	system := defaultSystemMessage()
-	if !strings.Contains(system, "do not repeat the same failed call") || !strings.Contains(system, "create_file and include a short description") {
+	if !strings.Contains(system, "Spend tokens like they are expensive") ||
+		!strings.Contains(system, "If the user asks to create a new known file, call create_file directly") ||
+		!strings.Contains(system, "do not repeat the same failed call") ||
+		!strings.Contains(system, "create_file and include a short description") {
 		t.Fatalf("system prompt does not guide failed tool recovery: %s", system)
 	}
 }

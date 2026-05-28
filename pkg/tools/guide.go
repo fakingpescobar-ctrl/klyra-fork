@@ -49,10 +49,11 @@ func builtInGuide(query string) string {
 	case mentionsSkill(lower):
 		return strings.TrimSpace(`Skill creation workflow:
 1. Create exactly one markdown file under .klyra/skills/<short-name>.md, .klyra/skills/<short-name>/SKILL.md, skills/<short-name>.md, or skills/<short-name>/SKILL.md.
-2. Use create_file for a new skill. Do not inspect sessions, .env, or unrelated project files unless the user explicitly asks.
-3. Include metadata at the top: name, description, triggers.
-4. Keep the body short, operational, and task-specific. Mention exact tools or commands the future agent should use.
-5. The new skill is loaded on the next user request, not the current one.`)
+2. If supporting scripts/examples are genuinely needed, create them under that same skill directory only.
+3. Use create_file for new skill files. Do not inspect sessions, .env, or unrelated project files unless the user explicitly asks.
+4. Include metadata at the top: name, description, triggers.
+5. Keep the body short, operational, and task-specific. Mention exact tools or commands the future agent should use.
+6. The new skill is loaded on the next user request, not the current one.`)
 	case mentionsWeb(lower) || strings.Contains(lower, "issue") || strings.Contains(lower, "github"):
 		return strings.TrimSpace(`Web and issue workflow:
 1. Use web_search only to find candidate pages, then fetch_url with query/focus to retrieve relevant chunks.
