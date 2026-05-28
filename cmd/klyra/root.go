@@ -396,6 +396,7 @@ func newTUICommand(opts *options) *cobra.Command {
 				{Name: "/status", Description: "Show workspace status"},
 				{Name: "/compact", Description: "Compact chat history to reduce tokens"},
 				{Name: "/settings", Description: "Open settings form"},
+				{Name: "/features", Description: "Toggle features on/off"},
 				{Name: "/provider", Description: "Set provider: mock/openai/chat/ollama/anthropic/gemini"},
 				{Name: "/model", Description: "Set the active model name"},
 				{Name: "/endpoint", Description: "Set provider endpoint base URL"},

@@ -170,6 +170,7 @@ const (
 	modalPicker
 	modalSettings
 	modalHelp
+	modalFeatures
 )
 
 type Model struct {
@@ -246,10 +247,11 @@ type Model struct {
 	requestStartTime       time.Time
 
 	// Modal state
-	activeModal   modalKind
-	pickerModal   *PickerModal
-	helpModal     *HelpModal
-	settingsModal *SettingsModal
+	activeModal    modalKind
+	pickerModal    *PickerModal
+	helpModal      *HelpModal
+	settingsModal  *SettingsModal
+	featuresModal  *FeaturesModal
 }
 
 type responseMsg struct {
@@ -460,6 +462,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "f2", "ctrl+s":
 			m.openSettingsModal()
+			return m, nil
+		case "f5":
+			m.openFeaturesModal()
 			return m, nil
 		case "f3":
 			m.debugExpanded = !m.debugExpanded
@@ -1477,6 +1482,10 @@ func (m Model) View() string {
 		if m.settingsModal != nil {
 			body = centerOverlay(m.width, m.viewport.Height, m.settingsModal.View(m.width, m.height))
 		}
+	case modalFeatures:
+		if m.featuresModal != nil {
+			body = centerOverlay(m.width, m.viewport.Height, m.featuresModal.View(m.width, m.height))
+		}
 	}
 
 	if autocomplete != "" {
@@ -1689,6 +1698,7 @@ func (m *Model) closeModal() {
 	m.pickerModal = nil
 	m.helpModal = nil
 	m.settingsModal = nil
+	m.featuresModal = nil
 }
 
 func (m Model) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1699,6 +1709,8 @@ func (m Model) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateHelpModal(msg)
 	case modalSettings:
 		return m.updateSettingsModal(msg)
+	case modalFeatures:
+		return m.updateFeaturesModal(msg)
 	}
 	return m, nil
 }
@@ -1990,6 +2002,92 @@ func (m Model) updateSettingsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // ---------------------------------------------------------------------------
+// Features modal
+// ---------------------------------------------------------------------------
+
+func (m *Model) openFeaturesModal() {
+	fm := NewFeaturesModal(
+		m.stream,
+		m.storeResponses,
+		m.contextCockpit,
+		m.contextCockpitInject,
+		m.contextCockpitDiff,
+		m.contextRetrieval,
+		m.contextEmbeddings,
+		m.contextReranker,
+		m.contextRecipes,
+		m.negativeContext,
+		m.skills,
+	)
+	m.featuresModal = &fm
+	m.activeModal = modalFeatures
+}
+
+func (m Model) updateFeaturesModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.featuresModal == nil {
+		m.closeModal()
+		return m, nil
+	}
+	fm := m.featuresModal
+
+	switch msg.String() {
+	case "esc":
+		m.closeModal()
+		return m, nil
+	case "tab", "down", "j":
+		fm.MoveDown()
+		return m, nil
+	case "shift+tab", "up", "k":
+		fm.MoveUp()
+		return m, nil
+	case " ", "enter":
+		fm.Toggle()
+		return m, nil
+	case "a":
+		fm.EnableAll()
+		return m, nil
+	case "n":
+		fm.DisableAll()
+		return m, nil
+	case "ctrl+s":
+		// Apply changes to model state
+		m.stream = fm.GetValue("stream") != "off"
+		m.storeResponses = fm.GetValue("store") != "off"
+		m.contextCockpit = fm.GetValue("context_cockpit") != "off"
+		m.contextCockpitInject = fm.GetValue("context_cockpit_inject") != "off"
+		m.contextCockpitDiff = fm.GetValue("context_cockpit_diff") != "off"
+		m.contextRetrieval = fm.GetValue("context_retrieval") != "off"
+		m.contextEmbeddings = fm.GetValue("context_embeddings") != "off"
+		m.contextReranker = fm.GetValue("context_reranker") != "off"
+		m.contextRecipes = fm.GetValue("context_recipes") != "off"
+		m.negativeContext = fm.GetValue("negative_context") != "off"
+		m.skills = fm.GetValue("skills") != "off"
+
+		// Build /set command
+		parts := []string{"/set",
+			"stream=" + onOff(m.stream),
+			"store=" + onOff(m.storeResponses),
+			"context_cockpit=" + onOff(m.contextCockpit),
+			"context_cockpit_inject=" + onOff(m.contextCockpitInject),
+			"context_cockpit_diff=" + onOff(m.contextCockpitDiff),
+			"context_retrieval=" + onOff(m.contextRetrieval),
+			"context_embeddings=" + onOff(m.contextEmbeddings),
+			"context_reranker=" + onOff(m.contextReranker),
+			"context_recipes=" + onOff(m.contextRecipes),
+			"negative_context=" + onOff(m.negativeContext),
+			"skills=" + onOff(m.skills),
+		}
+		cmdText := strings.Join(parts, " ")
+
+		m.closeModal()
+		m.lines = append(m.lines, "system: features saved")
+		m.syncViewport(true)
+		return m, runHandler(m.handler, cmdText, false)
+	}
+	return m, nil
+}
+
+// ---------------------------------------------------------------------------
 // Header
 // ---------------------------------------------------------------------------
 
@@ -2234,6 +2332,9 @@ func (m *Model) handleLocalCommand(value string) (bool, tea.Cmd) {
 			return true, nil
 		case "/settings":
 			m.openSettingsModal()
+			return true, nil
+		case "/features":
+			m.openFeaturesModal()
 			return true, nil
 		case "/help":
 			m.openHelpModal()

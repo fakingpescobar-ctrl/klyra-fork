@@ -39,7 +39,7 @@ func NewHelpModal(commands []CommandDef) HelpModal {
 		switch {
 		case cmd.Name == "/help" || cmd.Name == "/exit" || cmd.Name == "/quit" || cmd.Name == "/clear" || cmd.Name == "/save" || cmd.Name == "/compact":
 			catMap["Session"] = append(catMap["Session"], cmd)
-		case cmd.Name == "/provider" || cmd.Name == "/model" || cmd.Name == "/endpoint" || cmd.Name == "/reasoning" || cmd.Name == "/limits" || cmd.Name == "/settings":
+		case cmd.Name == "/provider" || cmd.Name == "/model" || cmd.Name == "/endpoint" || cmd.Name == "/reasoning" || cmd.Name == "/limits" || cmd.Name == "/settings" || cmd.Name == "/features":
 			catMap["Settings"] = append(catMap["Settings"], cmd)
 		case cmd.Name == "/approval" || cmd.Name == "/sandbox" || cmd.Name == "/mode":
 			catMap["Safety"] = append(catMap["Safety"], cmd)
