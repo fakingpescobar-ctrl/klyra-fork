@@ -230,9 +230,12 @@ type responsesUsage struct {
 }
 
 type responsesStreamEnvelope struct {
-	Type     string            `json:"type"`
-	Delta    string            `json:"delta"`
-	Response responsesResponse `json:"response"`
+	Type     string                `json:"type"`
+	Delta    string                `json:"delta"`
+	Text     string                `json:"text"`
+	Response responsesResponse     `json:"response"`
+	Item     responseOutputItem    `json:"item"`
+	Part     responseOutputContent `json:"part"`
 	Error    *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -258,7 +261,7 @@ func readResponsesStream(reader io.Reader, handler StreamHandler) (Response, err
 				return final, err
 			}
 			if hasResponsePayload(resp) {
-				final = resp
+				final = mergeStreamResponse(final, resp)
 			}
 			if isDone {
 				break
@@ -284,10 +287,26 @@ func readResponsesStream(reader io.Reader, handler StreamHandler) (Response, err
 			return final, err
 		}
 		if hasResponsePayload(resp) {
-			final = resp
+			final = mergeStreamResponse(final, resp)
 		}
 	}
 	return final, nil
+}
+
+func mergeStreamResponse(final, next Response) Response {
+	if next.ID != "" {
+		final.ID = next.ID
+	}
+	if strings.TrimSpace(next.Content) != "" {
+		final.Content = next.Content
+	}
+	if len(next.ToolCalls) > 0 {
+		final.ToolCalls = next.ToolCalls
+	}
+	if next.Usage.TotalTokens != 0 || next.Usage.InputTokens != 0 || next.Usage.OutputTokens != 0 {
+		final.Usage = next.Usage
+	}
+	return final
 }
 
 func processResponsesStreamData(dataLines []string, handler StreamHandler) (Response, error) {
@@ -312,6 +331,16 @@ func processResponsesStreamData(dataLines []string, handler StreamHandler) (Resp
 			if err := handler(StreamEvent{Delta: event.Delta}); err != nil {
 				return Response{}, err
 			}
+		}
+	case "response.output_text.done":
+		return Response{Content: event.Text}, nil
+	case "response.content_part.done":
+		if event.Part.Type == "output_text" {
+			return Response{Content: event.Part.Text}, nil
+		}
+	case "response.output_item.done":
+		if event.Item.Type == "message" || event.Item.Type == "function_call" {
+			return responsesResponse{Output: []responseOutputItem{event.Item}}.toLLMResponse(), nil
 		}
 	case "response.reasoning_text.delta":
 		if event.Delta != "" && handler != nil {

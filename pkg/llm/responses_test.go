@@ -289,3 +289,75 @@ func TestResponsesProviderStreamsReasoningSummaryDeltas(t *testing.T) {
 		t.Fatalf("unexpected reasoning deltas: %q", reasoning.String())
 	}
 }
+
+func TestResponsesProviderKeepsStreamTextWhenCompletedHasOnlyUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.output_text.delta\n")
+		fmt.Fprint(w, `data: {"type":"response.output_text.delta","delta":"hidden"}`+"\n\n")
+		fmt.Fprint(w, "event: response.output_text.done\n")
+		fmt.Fprint(w, `data: {"type":"response.output_text.done","text":"commentary"}`+"\n\n")
+		fmt.Fprint(w, "event: response.output_item.done\n")
+		fmt.Fprint(w, `data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"final answer"}]}}`+"\n\n")
+		fmt.Fprint(w, "event: response.completed\n")
+		fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"resp_stream","usage":{"input_tokens":10,"output_tokens":4,"total_tokens":14}}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	provider, err := NewResponsesProvider("test-key", server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deltas strings.Builder
+	resp, err := provider.Stream(context.Background(), Request{
+		Model:    "gpt-test",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	}, func(event StreamEvent) error {
+		deltas.WriteString(event.Delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deltas.String() != "hidden" {
+		t.Fatalf("unexpected deltas: %q", deltas.String())
+	}
+	if resp.ID != "resp_stream" || resp.Content != "final answer" || resp.Usage.TotalTokens != 14 {
+		t.Fatalf("stream text or usage was lost: %+v", resp)
+	}
+}
+
+func TestResponsesProviderParsesStreamedFunctionCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.output_item.added\n")
+		fmt.Fprint(w, `data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","status":"in_progress","arguments":"","call_id":"call_1","name":"read_file"},"output_index":0}`+"\n\n")
+		fmt.Fprint(w, "event: response.function_call_arguments.delta\n")
+		fmt.Fprint(w, `data: {"type":"response.function_call_arguments.delta","delta":"{\"path\":\"README.md\"}","item_id":"fc_1","output_index":0}`+"\n\n")
+		fmt.Fprint(w, "event: response.function_call_arguments.done\n")
+		fmt.Fprint(w, `data: {"type":"response.function_call_arguments.done","arguments":"{\"path\":\"README.md\"}","item_id":"fc_1","output_index":0}`+"\n\n")
+		fmt.Fprint(w, "event: response.output_item.done\n")
+		fmt.Fprint(w, `data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","status":"completed","arguments":"{\"path\":\"README.md\"}","call_id":"call_1","name":"read_file"},"output_index":0}`+"\n\n")
+		fmt.Fprint(w, "event: response.completed\n")
+		fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"resp_stream","usage":{"input_tokens":10,"output_tokens":4,"total_tokens":14}}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	provider, err := NewResponsesProvider("test-key", server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := provider.Stream(context.Background(), Request{
+		Model:    "gpt-test",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "resp_stream" || resp.Usage.TotalTokens != 14 {
+		t.Fatalf("stream metadata was lost: %+v", resp)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].ID != "call_1" || resp.ToolCalls[0].Name != "read_file" || resp.ToolCalls[0].Arguments["path"] != "README.md" {
+		t.Fatalf("streamed function call was not parsed: %+v", resp.ToolCalls)
+	}
+}
