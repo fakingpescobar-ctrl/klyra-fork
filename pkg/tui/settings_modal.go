@@ -121,8 +121,8 @@ func NewSettingsModal(
 	return SettingsModal{
 		Fields:     fields,
 		Cursor:     0,
-		Width:      72,
-		MaxVisible: 18,
+		Width:      80,
+		MaxVisible: 20,
 		Expanded:   map[settingsSection]bool{},
 	}
 }
@@ -517,12 +517,14 @@ func (s SettingsModal) View(termWidth, termHeight int) string {
 				hintKeyStyle.Render("Tab")+hintTextStyle.Render(" next field"))
 	}
 
-	// Apply scrolling
+	hintScrollStyle := lipgloss.NewStyle().Foreground(colorDim)
+
+	// Apply scrolling — leave room for border + padding + header chrome
 	visibleMax := s.MaxVisible
 	if termHeight > 0 {
-		visibleMax = termHeight - 6
-		if visibleMax < 12 {
-			visibleMax = 12
+		visibleMax = termHeight - 10
+		if visibleMax < 10 {
+			visibleMax = 10
 		}
 	}
 
@@ -540,19 +542,43 @@ func (s SettingsModal) View(termWidth, termHeight int) string {
 			start = 0
 		}
 		visibleLines = allLines[start:end]
+
+		// Scroll indicators
+		if start > 0 {
+			visibleLines = append([]string{hintScrollStyle.Render("  ▲ more above")}, visibleLines...)
+		}
+		if end < len(allLines) {
+			visibleLines = append(visibleLines, hintScrollStyle.Render("  ▼ more below"))
+		}
 	}
 
 	content := strings.Join(visibleLines, "\n")
 
+	// Width: use 80% of terminal, clamped to [48, 90]
 	boxWidth := s.Width
-	if boxWidth <= 0 {
-		boxWidth = 68
+	if termWidth > 0 {
+		adaptive := termWidth * 80 / 100
+		if adaptive > 90 {
+			adaptive = 90
+		}
+		if adaptive < 48 {
+			adaptive = max(36, termWidth-4)
+		}
+		if adaptive > boxWidth {
+			boxWidth = adaptive
+		}
+		if boxWidth > termWidth-4 {
+			boxWidth = termWidth - 4
+		}
 	}
-	if termWidth > 0 && boxWidth > termWidth-8 {
-		boxWidth = termWidth - 8
+	if boxWidth < 48 {
+		boxWidth = 48
 	}
-	if boxWidth < 36 {
-		boxWidth = max(24, termWidth-4)
+
+	// Hard-cap height to prevent any overflow past the terminal
+	maxBoxHeight := termHeight - 2
+	if maxBoxHeight < 14 {
+		maxBoxHeight = 14
 	}
 
 	box := lipgloss.NewStyle().
@@ -561,6 +587,7 @@ func (s SettingsModal) View(termWidth, termHeight int) string {
 		Foreground(colorText).
 		Padding(1, 2).
 		Width(boxWidth).
+		MaxHeight(maxBoxHeight).
 		Render(content)
 
 	if termWidth > 0 {

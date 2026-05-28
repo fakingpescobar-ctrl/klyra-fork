@@ -135,15 +135,28 @@ func (p PickerModal) View(termWidth int) string {
 			hintKeyStyle.Render("Enter")+hintTextStyle.Render(" select  ")+
 			hintKeyStyle.Render("Esc")+hintTextStyle.Render(" cancel"))
 
+	// Width: use 60% of terminal for pickers, clamped to [40, 72]
 	boxWidth := p.Width
 	if boxWidth <= 0 {
-		boxWidth = 48
+		boxWidth = 56
 	}
-	if termWidth > 0 && boxWidth > termWidth-4 {
-		boxWidth = termWidth - 4
+	if termWidth > 0 {
+		adaptive := termWidth * 60 / 100
+		if adaptive > 72 {
+			adaptive = 72
+		}
+		if adaptive < 40 {
+			adaptive = max(32, termWidth-4)
+		}
+		if adaptive > boxWidth {
+			boxWidth = adaptive
+		}
+		if boxWidth > termWidth-4 {
+			boxWidth = termWidth - 4
+		}
 	}
-	if boxWidth < 32 {
-		boxWidth = max(20, termWidth-4)
+	if boxWidth < 40 {
+		boxWidth = 40
 	}
 	contentWidth := max(20, boxWidth-6)
 

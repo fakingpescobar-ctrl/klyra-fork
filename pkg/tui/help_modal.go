@@ -122,6 +122,7 @@ func (h HelpModal) View(termWidth, termHeight int) string {
 	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("Tab   "), cmdDescStyle.Render("Next field in settings / Autocomplete")))
 	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("F3    "), cmdDescStyle.Render("Toggle Context Debugger")))
 	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("F4    "), cmdDescStyle.Render("Toggle Model Reasoning (Thoughts)")))
+	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("F5    "), cmdDescStyle.Render("Toggle features on/off")))
 	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("F6    "), cmdDescStyle.Render("Toggle copy mode")))
 	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("F7    "), cmdDescStyle.Render("Cycle sidebar mode (files/diff/context)")))
 	allLines = append(allLines, fmt.Sprintf("  %s  %s", kbdStyle.Render("Alt+F7  "), cmdDescStyle.Render("Toggle sidebar visibility")))
@@ -146,10 +147,10 @@ func (h HelpModal) View(termWidth, termHeight int) string {
 		hintKeyStyle.Render("↑/↓")+hintTextStyle.Render(" scroll  ")+
 			hintKeyStyle.Render("Esc")+hintTextStyle.Render(" close"))
 
-	// Apply scrolling
+	// Apply scrolling — leave room for border + padding + header chrome
 	visibleMax := h.MaxVisible
 	if termHeight > 0 {
-		visibleMax = termHeight - 8
+		visibleMax = termHeight - 10
 		if visibleMax < 10 {
 			visibleMax = 10
 		}
@@ -179,12 +180,31 @@ func (h HelpModal) View(termWidth, termHeight int) string {
 
 	content := strings.Join(visibleLines, "\n")
 
-	boxWidth := 64
-	if termWidth > 0 && boxWidth > termWidth-8 {
-		boxWidth = termWidth - 8
+	// Width: use 80% of terminal, clamped to [48, 90]
+	boxWidth := 80
+	if termWidth > 0 {
+		adaptive := termWidth * 80 / 100
+		if adaptive > 90 {
+			adaptive = 90
+		}
+		if adaptive < 48 {
+			adaptive = max(36, termWidth-4)
+		}
+		if adaptive > boxWidth {
+			boxWidth = adaptive
+		}
+		if boxWidth > termWidth-4 {
+			boxWidth = termWidth - 4
+		}
 	}
-	if boxWidth < 36 {
-		boxWidth = max(24, termWidth-4)
+	if boxWidth < 48 {
+		boxWidth = 48
+	}
+
+	// Hard-cap height to prevent any overflow past the terminal
+	maxBoxHeight := termHeight - 2
+	if maxBoxHeight < 14 {
+		maxBoxHeight = 14
 	}
 
 	box := lipgloss.NewStyle().
@@ -193,6 +213,7 @@ func (h HelpModal) View(termWidth, termHeight int) string {
 		Foreground(colorText).
 		Padding(1, 2).
 		Width(boxWidth).
+		MaxHeight(maxBoxHeight).
 		Render(content)
 
 	if termWidth > 0 {
