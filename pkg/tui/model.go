@@ -1545,6 +1545,7 @@ func (m Model) renderAutocomplete() (string, int) {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorMuted).
+		MarginLeft(4).
 		Render(content)
 
 	return box, lipgloss.Height(box)
