@@ -91,7 +91,7 @@ func (p *PickerModal) SelectedValue() string {
 }
 
 // View renders the picker modal.
-func (p PickerModal) View(termWidth, termHeight int) string {
+func (p *PickerModal) View(termWidth, termHeight int) string {
 	titleStyle := lipgloss.NewStyle().
 		Foreground(colorBrand).
 		Bold(true)
@@ -147,12 +147,24 @@ func (p PickerModal) View(termWidth, termHeight int) string {
 		optionLines = append(optionLines, line)
 	}
 
+	// Calculate vertical budget
+	paddingY := 1
+	if termHeight > 0 && termHeight <= 14 {
+		paddingY = 0
+	}
+	showHints := termHeight > 8
+
 	// Apply scrolling to options
 	visibleMax := p.MaxVisible
 	if termHeight > 0 {
-		visibleMax = termHeight - 8 // Leave room for title (2 lines) and hint (2 lines) and borders
-		if visibleMax < 3 {
-			visibleMax = 3
+		overhead := 2 + paddingY*2 + 2 // borders + paddingY*2 + title & blank
+		if showHints {
+			overhead += 2 // blank + hint
+		}
+		overhead += 2 // scroll indicators overhead
+		visibleMax = termHeight - overhead
+		if visibleMax < 2 {
+			visibleMax = 2
 		}
 	}
 	p.MaxVisible = visibleMax
@@ -184,11 +196,14 @@ func (p PickerModal) View(termWidth, termHeight int) string {
 	allLines = append(allLines, titleStyle.Render(p.Title))
 	allLines = append(allLines, "")
 	allLines = append(allLines, visibleOptions...)
-	allLines = append(allLines, "")
-	allLines = append(allLines,
-		hintKeyStyle.Render("↑/↓")+hintTextStyle.Render(" navigate  ")+
-			hintKeyStyle.Render("Enter")+hintTextStyle.Render(" select  ")+
-			hintKeyStyle.Render("Esc")+hintTextStyle.Render(" cancel"))
+
+	if showHints {
+		allLines = append(allLines, "")
+		allLines = append(allLines,
+			hintKeyStyle.Render("↑/↓")+hintTextStyle.Render(" navigate  ")+
+				hintKeyStyle.Render("Enter")+hintTextStyle.Render(" select  ")+
+				hintKeyStyle.Render("Esc")+hintTextStyle.Render(" cancel"))
+	}
 
 	// Width: use 60% of terminal for pickers, clamped to [40, 72]
 	boxWidth := p.Width
@@ -233,7 +248,7 @@ func (p PickerModal) View(termWidth, termHeight int) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorBrand).
 		Foreground(colorText).
-		Padding(1, 2).
+		Padding(paddingY, 2).
 		Width(boxWidth).
 		MaxHeight(maxBoxHeight).
 		Render(strings.Join(fitted, "\n"))

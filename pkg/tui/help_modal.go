@@ -157,9 +157,15 @@ func (h *HelpModal) View(termWidth, termHeight int) string {
 			hintKeyStyle.Render("Esc")+hintTextStyle.Render(" close"))
 
 	// Apply scrolling — leave room for border + padding + header chrome
+	paddingY := 1
+	if termHeight > 0 && termHeight <= 14 {
+		paddingY = 0
+	}
+
 	visibleMax := h.MaxVisible
 	if termHeight > 0 {
-		visibleMax = termHeight - 10
+		overhead := 2 + paddingY*2 + 6 // borders + paddingY*2 + scroll indicators (2) + layout overhead (4)
+		visibleMax = termHeight - overhead
 		if visibleMax < 4 {
 			visibleMax = 4
 		}
@@ -224,7 +230,7 @@ func (h *HelpModal) View(termWidth, termHeight int) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorBrand).
 		Foreground(colorText).
-		Padding(1, 2).
+		Padding(paddingY, 2).
 		Width(boxWidth).
 		MaxHeight(maxBoxHeight).
 		Render(content)
