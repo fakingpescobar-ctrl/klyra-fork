@@ -136,6 +136,48 @@ func TestRetrievalCartSkipsChunksOverBudget(t *testing.T) {
 	}
 }
 
+func TestRetrievalCartUsesLocalEmbeddingsForIdentifierSubtokens(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "pkg/security/check.go", `package security
+
+func ValidateToken(raw string) bool {
+	return raw != ""
+}
+`)
+	writeFile(t, root, "pkg/other/cache.go", `package other
+
+func StoreValue(raw string) bool {
+	return raw != ""
+}
+`)
+
+	withoutEmbeddings, _ := buildRetrievalCart(context.Background(), retrievalConfig{
+		MaxTokens:     300,
+		MaxChunks:     2,
+		MaxFiles:      10,
+		UseEmbeddings: false,
+	}, root, "token validation")
+	if strings.Contains(withoutEmbeddings, "pkg/security/check.go") {
+		t.Fatalf("expected lexical-only retrieval to miss camel-case semantic match:\n%s", withoutEmbeddings)
+	}
+
+	withEmbeddings, warnings := buildRetrievalCart(context.Background(), retrievalConfig{
+		MaxTokens:     300,
+		MaxChunks:     2,
+		MaxFiles:      10,
+		UseEmbeddings: true,
+	}, root, "token validation")
+	if len(warnings) > 0 {
+		t.Fatalf("unexpected warnings: %+v", warnings)
+	}
+	if !strings.Contains(withEmbeddings, "pkg/security/check.go") || !strings.Contains(withEmbeddings, "local-embedding") {
+		t.Fatalf("expected local embeddings to retrieve identifier subtoken match:\n%s", withEmbeddings)
+	}
+	if strings.Contains(withEmbeddings, "configured on, but MVP") {
+		t.Fatalf("embedding retrieval should be real, not a placeholder note:\n%s", withEmbeddings)
+	}
+}
+
 func writeFile(t *testing.T, root, path, content string) {
 	t.Helper()
 	target := filepath.Join(root, path)

@@ -110,7 +110,7 @@ func Build(ctx context.Context, cfg Config, cwd, focus string, contextFiles []st
 			RepoMap:       repoMap.Output,
 		}, cwd, focus)
 		snapshot.Warnings = append(snapshot.Warnings, warnings...)
-		addCardBudget("retrieval_cart", "Retrieval Cart", "BM25 chunks boosted by AST repo-map hints; selected context with token prices", retrieval, cfg.RetrievalTokens)
+		addCardBudget("retrieval_cart", "Retrieval Cart", "BM25 chunks boosted by local embeddings and AST repo-map hints; selected context with token prices", retrieval, cfg.RetrievalTokens)
 	}
 
 	addCard("aci", "Agent Rails", "preferred low-token workflow", strings.Join([]string{

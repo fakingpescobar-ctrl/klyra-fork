@@ -50,7 +50,7 @@ func TestLoadMissingReturnsDefault(t *testing.T) {
 	if cfg.Provider != "mock" || cfg.MaxSteps == 0 || cfg.MaxContext == 0 || !cfg.Stream || !cfg.ContextCockpit || !cfg.ContextCockpitInject || !cfg.ContextRetrieval || !cfg.ContextRecipes || !cfg.NegativeContext || !cfg.Skills {
 		t.Fatalf("expected defaults, got %+v", cfg)
 	}
-	if cfg.ContextCockpitMaxCards != 10 || cfg.ContextRetrievalTokens != 1000 || cfg.ContextRetrievalChunks != 10 || cfg.ContextEmbeddings || cfg.ContextReranker {
+	if cfg.ContextCockpitMaxCards != 10 || cfg.ContextRetrievalTokens != 1000 || cfg.ContextRetrievalChunks != 10 || !cfg.ContextEmbeddings || cfg.ContextReranker {
 		t.Fatalf("expected retrieval MVP defaults, got %+v", cfg)
 	}
 }
@@ -64,7 +64,7 @@ func TestLoadOldConfigDefaultsNewContextBooleansOn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Stream || !cfg.ContextCockpit || !cfg.ContextCockpitInject || !cfg.ContextCockpitDiff || !cfg.ContextRetrieval || cfg.ContextEmbeddings || cfg.ContextReranker || !cfg.ContextRecipes || !cfg.NegativeContext || !cfg.Skills {
+	if !cfg.Stream || !cfg.ContextCockpit || !cfg.ContextCockpitInject || !cfg.ContextCockpitDiff || !cfg.ContextRetrieval || !cfg.ContextEmbeddings || cfg.ContextReranker || !cfg.ContextRecipes || !cfg.NegativeContext || !cfg.Skills {
 		t.Fatalf("expected missing new context booleans to default on: %+v", cfg)
 	}
 }

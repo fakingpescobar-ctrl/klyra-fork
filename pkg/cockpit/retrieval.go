@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	maxChunkBytes = 2400
-	minChunkBytes = 320
+	maxChunkBytes       = 2400
+	minChunkBytes       = 320
+	embeddingDimensions = 384
 )
 
 type retrievalConfig struct {
@@ -61,8 +62,13 @@ func buildRetrievalCart(ctx context.Context, cfg retrievalConfig, cwd, query str
 	astHints := repoMapHints(cfg.RepoMap)
 	idf := inverseDocumentFrequency(chunks)
 	avgLen := averageChunkTerms(chunks)
+	queryEmbedding := embeddingVector(query)
 	for i := range chunks {
-		chunks[i].Score, chunks[i].Reason = scoreChunk(chunks[i], queryTerms, idf, avgLen, astHints)
+		embeddingScore := 0.0
+		if cfg.UseEmbeddings {
+			embeddingScore = cosineSparse(queryEmbedding, embeddingVector(chunks[i].Path+" "+chunks[i].Text))
+		}
+		chunks[i].Score, chunks[i].Reason = scoreChunk(chunks[i], queryTerms, idf, avgLen, astHints, embeddingScore)
 	}
 	sort.SliceStable(chunks, func(i, j int) bool {
 		if chunks[i].Score == chunks[j].Score {
@@ -82,11 +88,8 @@ func buildRetrievalCart(ctx context.Context, cfg retrievalConfig, cwd, query str
 	var lines []string
 	lines = append(lines, fmt.Sprintf("query: %s", strings.TrimSpace(query)))
 	lines = append(lines, fmt.Sprintf("budget: %d tokens / %d chunks", cfg.MaxTokens, cfg.MaxChunks))
-	lines = append(lines, fmt.Sprintf("embeddings: %s", onOff(cfg.UseEmbeddings)))
+	lines = append(lines, fmt.Sprintf("embeddings: %s", embeddingMode(cfg.UseEmbeddings)))
 	lines = append(lines, fmt.Sprintf("reranker: %s", onOff(cfg.UseReranker)))
-	if cfg.UseEmbeddings {
-		lines = append(lines, "note: embeddings are configured on, but MVP retrieval currently uses deterministic BM25+AST only")
-	}
 	if cfg.UseReranker {
 		lines = append(lines, "note: reranker is configured on, but no external reranker is wired in this MVP")
 	}
@@ -210,7 +213,7 @@ func appendChunk(chunks []retrievalChunk, path string, lines []string, startLine
 	})
 }
 
-func scoreChunk(chunk retrievalChunk, queryTerms []string, idf map[string]float64, avgLen float64, astHints map[string]bool) (float64, string) {
+func scoreChunk(chunk retrievalChunk, queryTerms []string, idf map[string]float64, avgLen float64, astHints map[string]bool, embeddingScore float64) (float64, string) {
 	const k1 = 1.2
 	const b = 0.75
 	docLen := float64(sumTerms(chunk.Terms))
@@ -238,6 +241,10 @@ func scoreChunk(chunk retrievalChunk, queryTerms []string, idf map[string]float6
 			boosts = append(boosts, "path:"+term)
 		}
 	}
+	if embeddingScore >= 0.08 {
+		score += embeddingScore * 4.0
+		boosts = append(boosts, fmt.Sprintf("local-embedding=%.2f", embeddingScore))
+	}
 	if strings.Contains(strings.ToLower(filepath.Base(chunk.Path)), "test") {
 		score += 0.2
 	}
@@ -249,6 +256,154 @@ func scoreChunk(chunk retrievalChunk, queryTerms []string, idf map[string]float6
 		reason += "; boosts: " + strings.Join(boosts, ", ")
 	}
 	return score, reason
+}
+
+func embeddingMode(enabled bool) string {
+	if !enabled {
+		return "off"
+	}
+	return "local-hash"
+}
+
+func embeddingVector(text string) map[int]float64 {
+	features := embeddingFeatures(text)
+	if len(features) == 0 {
+		return nil
+	}
+	vec := make(map[int]float64, len(features))
+	for feature, weight := range features {
+		if feature == "" || weight == 0 {
+			continue
+		}
+		idx := stableFeatureIndex(feature)
+		vec[idx] += weight
+	}
+	norm := 0.0
+	for _, value := range vec {
+		norm += value * value
+	}
+	if norm == 0 {
+		return vec
+	}
+	norm = math.Sqrt(norm)
+	for idx, value := range vec {
+		vec[idx] = value / norm
+	}
+	return vec
+}
+
+func embeddingFeatures(text string) map[string]float64 {
+	features := map[string]float64{}
+	for _, token := range rawEmbeddingTokens(text) {
+		tokenLower := strings.ToLower(token)
+		addEmbeddingFeature(features, "tok:"+tokenLower, 2.0)
+		for _, part := range splitIdentifierToken(token) {
+			if len(part) >= 2 {
+				addEmbeddingFeature(features, "part:"+part, 1.8)
+			}
+			addCharNgrams(features, part, 3, 4, 0.35)
+		}
+		addCharNgrams(features, tokenLower, 3, 5, 0.25)
+	}
+	return features
+}
+
+func addEmbeddingFeature(features map[string]float64, key string, weight float64) {
+	if key == "" {
+		return
+	}
+	features[key] += weight
+}
+
+func addCharNgrams(features map[string]float64, token string, minN, maxN int, weight float64) {
+	runes := []rune(token)
+	if len(runes) < minN {
+		return
+	}
+	for n := minN; n <= maxN; n++ {
+		if len(runes) < n {
+			continue
+		}
+		for i := 0; i+n <= len(runes); i++ {
+			addEmbeddingFeature(features, fmt.Sprintf("ng%d:%s", n, string(runes[i:i+n])), weight)
+		}
+	}
+}
+
+func rawEmbeddingTokens(text string) []string {
+	var tokens []string
+	var current []rune
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		token := string(current)
+		current = current[:0]
+		tokenLower := strings.ToLower(token)
+		if len(tokenLower) < 2 || stopTerms[tokenLower] {
+			return
+		}
+		tokens = append(tokens, token)
+	}
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			current = append(current, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return tokens
+}
+
+func splitIdentifierToken(token string) []string {
+	var parts []string
+	var current []rune
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		part := strings.ToLower(string(current))
+		current = current[:0]
+		if len(part) >= 2 && !stopTerms[part] {
+			parts = append(parts, part)
+		}
+	}
+	for i, r := range token {
+		if i > 0 && unicode.IsUpper(r) {
+			flush()
+		}
+		current = append(current, r)
+	}
+	flush()
+	tokenLower := strings.ToLower(token)
+	if len(parts) == 0 && len(tokenLower) >= 2 && !stopTerms[tokenLower] {
+		parts = append(parts, tokenLower)
+	}
+	return parts
+}
+
+func stableFeatureIndex(feature string) int {
+	hash := uint32(2166136261)
+	for _, b := range []byte(feature) {
+		hash ^= uint32(b)
+		hash *= 16777619
+	}
+	return int(hash % embeddingDimensions)
+}
+
+func cosineSparse(left, right map[int]float64) float64 {
+	if len(left) == 0 || len(right) == 0 {
+		return 0
+	}
+	if len(left) > len(right) {
+		left, right = right, left
+	}
+	score := 0.0
+	for idx, value := range left {
+		score += value * right[idx]
+	}
+	return score
 }
 
 func selectRetrievalChunks(chunks []retrievalChunk, maxChunks, maxTokens int) []retrievalChunk {

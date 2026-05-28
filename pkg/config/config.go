@@ -108,7 +108,7 @@ func Default() Config {
 		ContextRetrieval:       true,
 		ContextRetrievalTokens: 1000,
 		ContextRetrievalChunks: 10,
-		ContextEmbeddings:      false,
+		ContextEmbeddings:      true,
 		ContextReranker:        false,
 		ContextRecipes:         true,
 		NegativeContext:        true,

@@ -267,6 +267,8 @@ go run . --provider openai \
 
 Agent CLI estimates prompt tokens locally and packs context before provider calls. It preserves the system prompt, keeps recent turns, drops orphan tool outputs, and inserts a compact summary when older history would exceed `--max-context-tokens`.
 
+The context cockpit also builds a small retrieval cart before each task. It ranks file chunks with BM25, AST repo-map hints, and local hash embeddings over words, identifier subtokens, and character n-grams, so semantic matches such as `token validation` -> `ValidateToken` can be found without a network embedding service.
+
 ## Implemented tools
 
 - `project_map`: token-budgeted repo map for low-token discovery; includes important files and AST symbols.
