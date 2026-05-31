@@ -159,6 +159,9 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 	if shellIntent || testIntent {
 		names["bash"] = true
 	}
+	if mode == "edit" && codeIntent {
+		names["create_file"] = true
+	}
 	skillCreateIntent := mentionsSkill(task) && writeIntent
 	focusedSkillCreation := skillCreateIntent && mode == "edit" && len(contextFiles) == 0
 	if focusedSkillCreation {
@@ -168,6 +171,7 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 		}
 	}
 	if writeIntent && !focusedSkillCreation {
+		names["create_file"] = true
 		if len(contextFiles) > 0 || explicitPathIntent || mentionsNewFile(task) {
 			names["insert_lines"] = true
 			names["replace_lines"] = true
@@ -216,7 +220,6 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 	case "edit":
 		if len(contextFiles) == 0 {
 			if !skillCreateIntent && !mentionsNewFile(task) && !explicitPathIntent {
-				delete(names, "create_file")
 				delete(names, "insert_lines")
 				delete(names, "replace_lines")
 				delete(names, "replace_symbol")
@@ -534,4 +537,18 @@ func RequiresApproval(name string) bool {
 
 func isMCPTool(name string) bool {
 	return strings.HasPrefix(name, "mcp_")
+}
+
+func SuppressRepeatedSuccessfulCall(name string) bool {
+	switch name {
+	case "project_map", "git_status", "git_diff", "workspace_checkpoint_list", "policy_check",
+		"list_files", "read_file", "file_outline", "read_symbol", "read_go_symbol", "search":
+		return true
+	default:
+		return false
+	}
+}
+
+func HasSideEffects(name string) bool {
+	return isWriteTool(name) || isMCPTool(name) || name == "workspace_checkpoint"
 }

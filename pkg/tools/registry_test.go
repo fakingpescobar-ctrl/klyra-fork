@@ -47,6 +47,18 @@ func TestSpecsForExplicitFileEditExposeFocusedTools(t *testing.T) {
 	}
 }
 
+func TestSpecsForWorkspaceEditModeExposeCreateFileWithoutFocusedEditors(t *testing.T) {
+	specs := NewDefaultRegistry().SpecsForTaskMode("python TUI diceplay проект", "edit", nil)
+	if !hasSpec(specs, "create_file") {
+		t.Fatalf("workspace task in edit mode should expose create_file immediately: %+v", specs)
+	}
+	for _, name := range []string{"replace_lines", "replace_symbol", "insert_lines", "diff_patch", "read_file"} {
+		if hasSpec(specs, name) {
+			t.Fatalf("new project without files should not expose %s: %+v", name, specs)
+		}
+	}
+}
+
 func TestSpecsWithContextCartExposePatchTools(t *testing.T) {
 	specs := NewDefaultRegistry().SpecsForTaskMode("исправь баг", "edit", []string{"pkg/agent/agent.go"})
 	if !hasSpec(specs, "diff_patch") || !hasSpec(specs, "workspace_checkpoint") || !hasSpec(specs, "read_file") {

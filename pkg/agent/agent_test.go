@@ -101,6 +101,107 @@ func TestAgentSuppressesRepeatedFailedToolCall(t *testing.T) {
 	}
 }
 
+func TestAgentSuppressesRepeatedReadOnlyCallAndAllowsRecovery(t *testing.T) {
+	call := llm.ToolCall{ID: "call-1", Name: "project_map", Arguments: map[string]any{"focus": "empty project"}}
+	provider := &scriptedProvider{
+		responses: []llm.Response{
+			{Content: "inspect", ToolCalls: []llm.ToolCall{call}},
+			{Content: "inspect again", ToolCalls: []llm.ToolCall{{ID: "call-2", Name: call.Name, Arguments: call.Arguments}}},
+			{Content: "done"},
+		},
+	}
+	projectMap := &countingTool{name: "project_map", output: "files: 0"}
+	agent, err := New(Config{
+		CWD:      t.TempDir(),
+		Provider: provider,
+		Tools:    tools.NewRegistry(projectMap),
+		Output:   io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := agent.RunConversation(context.Background(), nil, "create project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Final != "done" {
+		t.Fatalf("unexpected final response: %q", result.Final)
+	}
+	if projectMap.calls != 1 {
+		t.Fatalf("expected project_map to run once, ran %d times", projectMap.calls)
+	}
+	var suppressed bool
+	for _, msg := range result.Messages {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "repeated read-only tool call suppressed") {
+			suppressed = true
+		}
+	}
+	if !suppressed {
+		t.Fatalf("expected repeated read-only suppression observation: %+v", result.Messages)
+	}
+}
+
+func TestAgentStopsRepeatedReadOnlyLoopEarly(t *testing.T) {
+	call := func(id string) llm.Response {
+		return llm.Response{Content: "inspect", ToolCalls: []llm.ToolCall{{
+			ID: id, Name: "project_map", Arguments: map[string]any{"focus": "empty project"},
+		}}}
+	}
+	provider := &scriptedProvider{responses: []llm.Response{call("call-1"), call("call-2"), call("call-3")}}
+	projectMap := &countingTool{name: "project_map", output: "files: 0"}
+	agent, err := New(Config{
+		CWD:      t.TempDir(),
+		Provider: provider,
+		Tools:    tools.NewRegistry(projectMap),
+		Output:   io.Discard,
+		MaxSteps: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.RunConversation(context.Background(), nil, "create project")
+	if err == nil || !strings.Contains(err.Error(), "repeated no-progress project_map loop") {
+		t.Fatalf("expected no-progress loop error, got %v", err)
+	}
+	if projectMap.calls != 1 {
+		t.Fatalf("expected project_map to run once, ran %d times", projectMap.calls)
+	}
+}
+
+func TestAgentClearsReadOnlyCacheAfterSuccessfulWrite(t *testing.T) {
+	projectCall := func(id string) llm.Response {
+		return llm.Response{ToolCalls: []llm.ToolCall{{ID: id, Name: "project_map", Arguments: map[string]any{"focus": "project"}}}}
+	}
+	provider := &scriptedProvider{responses: []llm.Response{
+		projectCall("call-1"),
+		{ToolCalls: []llm.ToolCall{{ID: "call-2", Name: "create_file", Arguments: map[string]any{"path": "main.py", "content": "print('ok')"}}}},
+		projectCall("call-3"),
+		{Content: "done"},
+	}}
+	projectMap := &countingTool{name: "project_map", output: "map"}
+	createFile := &countingTool{name: "create_file", output: "created"}
+	agent, err := New(Config{
+		CWD:          t.TempDir(),
+		Provider:     provider,
+		Tools:        tools.NewRegistry(projectMap, createFile),
+		Output:       io.Discard,
+		ApprovalMode: "always",
+		Sandbox:      "workspace-write",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := agent.RunConversation(context.Background(), nil, "create project"); err != nil {
+		t.Fatal(err)
+	}
+	if projectMap.calls != 2 {
+		t.Fatalf("expected project_map cache reset after write, ran %d times", projectMap.calls)
+	}
+}
+
 func TestAgentSuppressesRepeatedGuideAndAllowsRecovery(t *testing.T) {
 	provider := &scriptedProvider{
 		responses: []llm.Response{
@@ -963,6 +1064,21 @@ type failingStreamProvider struct {
 type failingTool struct {
 	name  string
 	calls int
+}
+
+type countingTool struct {
+	name   string
+	output string
+	calls  int
+}
+
+func (t *countingTool) Spec() llm.ToolSpec {
+	return llm.ToolSpec{Name: t.name, Description: "Counts calls for tests.", Parameters: map[string]any{"type": "object"}}
+}
+
+func (t *countingTool) Run(context.Context, tools.Invocation) (tools.Result, error) {
+	t.calls++
+	return tools.Result{Output: t.output}, nil
 }
 
 func (t *failingTool) Spec() llm.ToolSpec {

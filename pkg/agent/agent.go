@@ -228,6 +228,9 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 	var lastUsage llm.Usage
 	var lastDebug ContextDebug
 	failedToolCalls := map[string]tools.Result{}
+	repeatedFailedCalls := map[string]int{}
+	successfulReadCalls := map[string]tools.Result{}
+	repeatedReadCalls := map[string]int{}
 	successfulPlanCalls := map[string]tools.Result{}
 	guideCompleted := false
 	repeatedGuideCalls := 0
@@ -311,13 +314,33 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 				}
 				continue
 			}
+			if previous, repeated := successfulReadCalls[signature]; tools.SuppressRepeatedSuccessfulCall(call.Name) && repeated {
+				repeatedReadCalls[signature]++
+				err := fmt.Errorf("repeated read-only tool call suppressed; the same call already returned the same available information; use the previous output, choose a different focused tool, or act on it")
+				observation := toolObservation(call, previous, err)
+				window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: observation})
+				fmt.Fprintf(a.cfg.Output, "tool error: %v\n", err)
+				if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: "error", Tool: call.Name, ID: call.ID, Args: call.Arguments, Output: previous.Output, Error: err.Error()}); progressErr != nil {
+					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, progressErr
+				}
+				if repeatedReadCalls[signature] >= 2 {
+					a.printUsage(lastUsage)
+					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, fmt.Errorf("agent stopped after repeated no-progress %s loop", call.Name)
+				}
+				continue
+			}
 			if previous, repeated := failedToolCalls[signature]; repeated {
+				repeatedFailedCalls[signature]++
 				err := fmt.Errorf("repeated failed tool call suppressed; previous output: %s; change strategy or use a different focused tool", strings.TrimSpace(previous.Output))
 				observation := toolObservation(call, tools.Result{Output: err.Error()}, err)
 				window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: observation})
 				fmt.Fprintf(a.cfg.Output, "tool error: %v\n", err)
 				if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: "error", Tool: call.Name, ID: call.ID, Args: call.Arguments, Output: err.Error(), Error: err.Error()}); progressErr != nil {
 					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, progressErr
+				}
+				if repeatedFailedCalls[signature] >= 2 {
+					a.printUsage(lastUsage)
+					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, fmt.Errorf("agent stopped after repeated failed %s loop", call.Name)
 				}
 				continue
 			}
@@ -341,6 +364,12 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 			}
 			if call.Name == "update_plan" && err == nil {
 				successfulPlanCalls[signature] = result
+			}
+			if err == nil && tools.HasSideEffects(call.Name) {
+				successfulReadCalls = map[string]tools.Result{}
+				repeatedReadCalls = map[string]int{}
+			} else if err == nil && tools.SuppressRepeatedSuccessfulCall(call.Name) {
+				successfulReadCalls[signature] = result
 			}
 			if err != nil {
 				failedToolCalls[signature] = result
@@ -609,6 +638,7 @@ General principles:
 
 When working with code and files:
 - If the user asks to create a new known file, call create_file directly. Do not run project_map/search/bash first just to learn how to create a file.
+- If the user asks to create a new project or application from scratch, create the first concrete file directly. If project_map shows an empty workspace, do not call it again.
 - For skill creation, call guide if unsure, then create .klyra/skills/<name>.md or .klyra/skills/<name>/SKILL.md. Supporting files must stay inside that skill directory. Stop after creating the requested skill.
 - First build a small context slice only when existing code must be understood: project_map/search -> file_outline/read_symbol -> short read_file ranges.
 - Keep token use low: prefer guide, symbols, line ranges, repo-map facts, and focused diffs over whole files.
@@ -654,6 +684,9 @@ func toolErrorGuidance(call llm.ToolCall, result tools.Result, runErr error) str
 	}
 	if strings.Contains(text, "repeated failed tool call suppressed") {
 		return "Choose a different tool or change the arguments before continuing."
+	}
+	if strings.Contains(text, "repeated read-only tool call suppressed") {
+		return "Use the previous output. Choose a different focused tool, perform the next concrete action, or answer the user."
 	}
 	return ""
 }
