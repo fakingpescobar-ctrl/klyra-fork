@@ -13,8 +13,11 @@ func TestSpecsForTaskPrunesWriteToolsForInspection(t *testing.T) {
 	if hasSpec(specs, "write_file") || hasSpec(specs, "diff_patch") || hasSpec(specs, "replace_symbol") {
 		t.Fatalf("inspection should not include edit tools: %+v", specs)
 	}
-	if !hasSpec(specs, "project_map") || !hasSpec(specs, "file_outline") || !hasSpec(specs, "read_symbol") || !hasSpec(specs, "read_file") {
-		t.Fatalf("inspection should include retrieval tools: %+v", specs)
+	if !hasSpec(specs, "project_map") || !hasSpec(specs, "file_outline") || !hasSpec(specs, "read_symbol") {
+		t.Fatalf("inspection should include orientation tools: %+v", specs)
+	}
+	if hasSpec(specs, "read_file") {
+		t.Fatalf("inspection should not expose read_file before a specific path is known: %+v", specs)
 	}
 	if !hasSpec(specs, "guide") {
 		t.Fatalf("inspection should include dynamic guide tool: %+v", specs)
@@ -26,8 +29,28 @@ func TestSpecsForTaskIncludesEditToolsForImplementation(t *testing.T) {
 	if hasSpec(specs, "write_file") {
 		t.Fatalf("implementation should hide primitive full-file writer: %+v", specs)
 	}
-	if !hasSpec(specs, "create_file") || !hasSpec(specs, "diff_patch") || !hasSpec(specs, "replace_symbol") || !hasSpec(specs, "replace_lines") || !hasSpec(specs, "insert_lines") || !hasSpec(specs, "bash") || !hasSpec(specs, "workspace_checkpoint") {
-		t.Fatalf("implementation should include edit and verification tools: %+v", specs)
+	if !hasSpec(specs, "guide") || !hasSpec(specs, "project_map") || !hasSpec(specs, "search") || !hasSpec(specs, "bash") {
+		t.Fatalf("implementation should start with orientation and verification tools: %+v", specs)
+	}
+	if hasSpec(specs, "diff_patch") || hasSpec(specs, "replace_lines") || hasSpec(specs, "replace_symbol") || hasSpec(specs, "read_file") {
+		t.Fatalf("implementation without path/cart should not expose heavy read/write tools: %+v", specs)
+	}
+}
+
+func TestSpecsForExplicitFileEditExposeFocusedTools(t *testing.T) {
+	specs := NewDefaultRegistry().SpecsForTaskMode("исправь pkg/agent/agent.go", "edit", nil)
+	if !hasSpec(specs, "read_file") || !hasSpec(specs, "replace_lines") || !hasSpec(specs, "replace_symbol") || !hasSpec(specs, "insert_lines") {
+		t.Fatalf("explicit file edit should expose focused tools: %+v", specs)
+	}
+	if hasSpec(specs, "diff_patch") || hasSpec(specs, "bash") {
+		t.Fatalf("explicit file edit should not expose patch/bash before needed: %+v", specs)
+	}
+}
+
+func TestSpecsWithContextCartExposePatchTools(t *testing.T) {
+	specs := NewDefaultRegistry().SpecsForTaskMode("исправь баг", "edit", []string{"pkg/agent/agent.go"})
+	if !hasSpec(specs, "diff_patch") || !hasSpec(specs, "workspace_checkpoint") || !hasSpec(specs, "read_file") {
+		t.Fatalf("context cart edit should expose heavier edit tools: %+v", specs)
 	}
 }
 
@@ -144,6 +167,35 @@ func TestEditModeBlocksCreateFileOutsideContextCart(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected edit mode to block create_file outside context cart")
+	}
+}
+
+func TestEditModeAllowsCreateFileWithoutContextCart(t *testing.T) {
+	dir := t.TempDir()
+	result, err := NewDefaultRegistry().RunWithPolicy(context.Background(), dir, "workspace-write", "edit", nil, llm.ToolCall{
+		Name:      "create_file",
+		Arguments: map[string]any{"path": "notes.md", "content": "hello"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output == "" {
+		t.Fatal("expected create_file output")
+	}
+}
+
+func TestEditModeAllowsFocusedEditWithoutContextCart(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "notes.md", "old\n")
+	result, err := NewDefaultRegistry().RunWithPolicy(context.Background(), dir, "workspace-write", "edit", nil, llm.ToolCall{
+		Name:      "replace_lines",
+		Arguments: map[string]any{"path": "notes.md", "start_line": 1, "end_line": 1, "content": "new"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output == "" {
+		t.Fatal("expected replace_lines output")
 	}
 }
 

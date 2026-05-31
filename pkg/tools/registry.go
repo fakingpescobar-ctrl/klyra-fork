@@ -120,6 +120,7 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 	shellIntent := mentionsShell(task)
 	testIntent := mentionsTest(task)
 	webIntent := mentionsWeb(task)
+	explicitPathIntent := mentionsSpecificPath(task)
 	codeIntent := len(contextFiles) > 0 || writeIntent || shellIntent || testIntent || mentionsCodeWorkspace(task)
 	names := map[string]bool{}
 
@@ -128,17 +129,26 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 		names["project_map"] = true
 		names["search"] = true
 		names["file_outline"] = true
-		names["read_file"] = true
 		names["read_symbol"] = true
-		names["git_status"] = true
-		names["policy_check"] = true
+		if len(contextFiles) > 0 || explicitPathIntent {
+			names["read_file"] = true
+		}
+		if mentionsFileListing(task) {
+			names["list_files"] = true
+		}
+		if writeIntent || testIntent || mentionsGit(task) {
+			names["git_status"] = true
+		}
+		if shellIntent {
+			names["policy_check"] = true
+		}
 	}
 	if webIntent {
 		names["guide"] = true
 		names["web_search"] = true
 		names["fetch_url"] = true
 	}
-	if mentionsGo(task) {
+	if mentionsGo(task) || explicitPathIntent {
 		names["read_go_symbol"] = true
 	}
 	if shellIntent || testIntent {
@@ -153,16 +163,20 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 		}
 	}
 	if writeIntent && !focusedSkillCreation {
-		names["diff_patch"] = true
-		names["diff_preview"] = true
-		names["insert_lines"] = true
-		names["replace_lines"] = true
-		names["replace_symbol"] = true
-		names["create_file"] = true
-		names["read_go_symbol"] = true
-		names["bash"] = true
-		names["git_diff"] = true
-		names["workspace_checkpoint"] = true
+		if len(contextFiles) > 0 || explicitPathIntent || mentionsNewFile(task) {
+			names["insert_lines"] = true
+			names["replace_lines"] = true
+			names["replace_symbol"] = true
+			names["create_file"] = true
+			names["read_file"] = true
+			names["read_go_symbol"] = true
+		}
+		if len(contextFiles) > 0 {
+			names["diff_patch"] = true
+			names["diff_preview"] = true
+			names["git_diff"] = true
+			names["workspace_checkpoint"] = true
+		}
 	}
 	switch mode {
 	case "inspect":
@@ -196,17 +210,17 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 		}
 	case "edit":
 		if len(contextFiles) == 0 {
-			if !skillCreateIntent {
+			if !skillCreateIntent && !mentionsNewFile(task) && !explicitPathIntent {
 				delete(names, "create_file")
+				delete(names, "insert_lines")
+				delete(names, "replace_lines")
+				delete(names, "replace_symbol")
 			}
 			delete(names, "diff_patch")
-			delete(names, "insert_lines")
-			delete(names, "replace_lines")
-			delete(names, "replace_symbol")
 			delete(names, "write_file")
 		}
 	}
-	if codeIntent && len(task) < 80 && !writeIntent && !shellIntent {
+	if codeIntent && len(task) < 80 && !writeIntent && !shellIntent && mentionsFileListing(task) {
 		names["list_files"] = true
 	}
 
@@ -272,14 +286,16 @@ func enforceMode(mode string, contextFiles []string, call llm.ToolCall) error {
 		}
 	case "edit":
 		if isFileWriteTool(call.Name) {
-			if call.Name == "create_file" && isProjectSkillBundlePath(primaryWritePath(call)) {
-				return nil
-			}
-			if len(contextFiles) == 0 {
+			if call.Name == "diff_patch" && len(contextFiles) == 0 {
 				return fmt.Errorf("mode edit requires files in context cart before %s", call.Name)
 			}
-			if path := primaryWritePath(call); path != "" && !pathAllowed(path, contextFiles) {
-				return fmt.Errorf("mode edit blocks %s outside context cart: %s", call.Name, path)
+			if len(contextFiles) > 0 {
+				if path := primaryWritePath(call); path != "" && !pathAllowed(path, contextFiles) {
+					return fmt.Errorf("mode edit blocks %s outside context cart: %s", call.Name, path)
+				}
+			}
+			if call.Name == "write_file" {
+				return fmt.Errorf("mode edit blocks legacy write_file; use create_file or focused edit tools")
 			}
 		}
 	case "refactor":
@@ -411,6 +427,41 @@ func mentionsCodeWorkspace(task string) bool {
 		"директор", "функц", "класс", "метод", "модул", "пакет", "баг", "ошибк", "трейс",
 		".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".java", ".md", ".json", ".yaml", ".yml",
 	})
+}
+
+func mentionsSpecificPath(task string) bool {
+	for _, field := range strings.Fields(task) {
+		field = strings.Trim(field, ".,:;!?()[]{}\"'`")
+		lower := strings.ToLower(strings.ReplaceAll(field, "\\", "/"))
+		if strings.Contains(lower, "/") && filepathExtLooksUseful(lower) {
+			return true
+		}
+		if filepathExtLooksUseful(lower) {
+			return true
+		}
+	}
+	return false
+}
+
+func filepathExtLooksUseful(path string) bool {
+	for _, ext := range []string{".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".java", ".md", ".json", ".yaml", ".yml", ".css", ".html", ".sh", ".toml"} {
+		if strings.HasSuffix(path, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+func mentionsFileListing(task string) bool {
+	return containsAny(task, []string{"list files", "show files", "tree", "ls ", "файлы", "список файлов", "структур"})
+}
+
+func mentionsGit(task string) bool {
+	return containsAny(task, []string{"git", "diff", "status", "commit", "branch", "статус", "дифф", "коммит", "ветк"})
+}
+
+func mentionsNewFile(task string) bool {
+	return containsAny(task, []string{"new file", "create file", "add file", "создай файл", "новый файл", "добавь файл"})
 }
 
 func mentionsShell(task string) bool {

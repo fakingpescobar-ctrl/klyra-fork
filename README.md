@@ -287,7 +287,7 @@ The context cockpit also builds a small retrieval cart before each task. It rank
 - `bash`: runs shell commands with timeout and output compression.
 - `diff_patch`: applies unified diffs via `git apply`.
 
-The agent prunes tool schemas per task so simple chat requests pay for no tools, web requests see only `guide`/`web_search`/`fetch_url`, and workspace tools are exposed only for code, file, shell, test, or edit intent.
+The agent prunes tool schemas per task so simple chat requests pay for no tools, web requests see only `guide`/`web_search`/`fetch_url`, and workspace tools are exposed only for code, file, shell, test, or edit intent. Workspace tools are progressive: broad code tasks start with orientation tools (`guide`, `project_map`, `search`, `file_outline`, `read_symbol`), `read_file` appears only when a concrete path or context cart exists, focused edit tools appear for explicit file edits, and heavier patch/checkpoint tools require a context cart.
 The agent can also call `policy_check` before risky shell commands; destructive shell patterns are blocked in `--approval auto`.
 
 ## Verification

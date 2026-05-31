@@ -593,7 +593,7 @@ func TestAgentUsesApprovalCallback(t *testing.T) {
 			{
 				ToolCalls: []llm.ToolCall{{
 					ID:        "call-1",
-					Name:      "write_file",
+					Name:      "create_file",
 					Arguments: map[string]any{"path": "x.txt", "content": "ok"},
 				}},
 			},
@@ -614,10 +614,10 @@ func TestAgentUsesApprovalCallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agent.Run(context.Background(), "write file"); err != nil {
+	if _, err := agent.Run(context.Background(), "create file"); err != nil {
 		t.Fatal(err)
 	}
-	if requestedTool != "write_file" {
+	if requestedTool != "create_file" {
 		t.Fatalf("approval callback was not called, got %q", requestedTool)
 	}
 	if !strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content, "rejected by user") {
@@ -632,7 +632,7 @@ func TestAgentAlwaysApprovalSkipsCallback(t *testing.T) {
 			{
 				ToolCalls: []llm.ToolCall{{
 					ID:        "call-1",
-					Name:      "write_file",
+					Name:      "create_file",
 					Arguments: map[string]any{"path": "x.txt", "content": "ok"},
 				}},
 			},
@@ -656,7 +656,7 @@ func TestAgentAlwaysApprovalSkipsCallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agent.Run(context.Background(), "write file"); err != nil {
+	if _, err := agent.Run(context.Background(), "create file"); err != nil {
 		t.Fatal(err)
 	}
 	if called {
@@ -704,7 +704,7 @@ func TestAgentSandboxBlocksWriteTool(t *testing.T) {
 			{
 				ToolCalls: []llm.ToolCall{{
 					ID:        "call-1",
-					Name:      "write_file",
+					Name:      "create_file",
 					Arguments: map[string]any{"path": "x.txt", "content": "x"},
 				}},
 			},
@@ -722,10 +722,10 @@ func TestAgentSandboxBlocksWriteTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agent.Run(context.Background(), "write file"); err != nil {
+	if _, err := agent.Run(context.Background(), "create file"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content, "sandbox read-only blocks write_file") {
+	if !strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content, "sandbox read-only blocks create_file") {
 		t.Fatalf("expected sandbox block observation: %+v", provider.requests[1].Messages)
 	}
 }
