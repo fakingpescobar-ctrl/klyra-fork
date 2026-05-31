@@ -156,6 +156,8 @@ type Config struct {
 	FastModel              string
 	EditModel              string
 	DeepModel              string
+	AllTools               []string
+	DisabledTools          []string
 	Handler                Handler
 	Interrupt              InterruptFunc
 	PickerProvider         PickerProvider
@@ -174,6 +176,7 @@ const (
 	modalSettings
 	modalHelp
 	modalFeatures
+	modalTools
 )
 
 type Model struct {
@@ -213,6 +216,8 @@ type Model struct {
 	fastModel              string
 	editModel              string
 	deepModel              string
+	allTools               []string
+	disabledTools          []string
 	handler                Handler
 	interrupt              InterruptFunc
 	pickerProvider         PickerProvider
@@ -255,6 +260,7 @@ type Model struct {
 	helpModal      *HelpModal
 	settingsModal  *SettingsModal
 	featuresModal  *FeaturesModal
+	toolsModal     *ToolsModal
 }
 
 type responseMsg struct {
@@ -338,6 +344,8 @@ func New(cfg Config) Model {
 		fastModel:              cfg.FastModel,
 		editModel:              cfg.EditModel,
 		deepModel:              cfg.DeepModel,
+		allTools:               append([]string(nil), cfg.AllTools...),
+		disabledTools:          append([]string(nil), cfg.DisabledTools...),
 		handler:                handler,
 		interrupt:              cfg.Interrupt,
 		pickerProvider:         cfg.PickerProvider,
@@ -468,6 +476,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "f5":
 			m.openFeaturesModal()
+			return m, nil
+		case "f9":
+			m.openToolsModal()
 			return m, nil
 		case "f3":
 			m.debugExpanded = !m.debugExpanded
@@ -925,7 +936,16 @@ func (m Model) buildFormattedLineItems() []formattedLineItem {
 
 	for idx, line := range m.lines {
 		if strings.HasPrefix(line, "you: ") {
-			add(idx, userMsgStyle.Render("  "+userPrefix+" "+line[5:]))
+			contentWidth := max(20, m.chatWidth()-4)
+			wrapped := lipgloss.NewStyle().Width(contentWidth).Render(line[5:])
+			wrappedLines := strings.Split(wrapped, "\n")
+			for i, wl := range wrappedLines {
+				if i == 0 {
+					add(idx, userMsgStyle.Render("  "+userPrefix+" "+wl))
+				} else {
+					add(idx, userMsgStyle.Render("    "+wl))
+				}
+			}
 		} else if strings.HasPrefix(line, "agent: ") {
 			text := line[7:]
 			if m.renderer != nil {
@@ -940,9 +960,27 @@ func (m Model) buildFormattedLineItems() []formattedLineItem {
 		} else if strings.HasPrefix(line, "thoughts:") {
 			add(idx, m.renderThoughtBlock(line)...)
 		} else if strings.HasPrefix(line, "error: ") {
-			add(idx, errorMsgStyle.Render("  "+errorPrefix+" "+line[7:]))
+			contentWidth := max(20, m.chatWidth()-4)
+			wrapped := lipgloss.NewStyle().Width(contentWidth).Render(line[7:])
+			wrappedLines := strings.Split(wrapped, "\n")
+			for i, wl := range wrappedLines {
+				if i == 0 {
+					add(idx, errorMsgStyle.Render("  "+errorPrefix+" "+wl))
+				} else {
+					add(idx, errorMsgStyle.Render("    "+wl))
+				}
+			}
 		} else if strings.HasPrefix(line, "system: ") {
-			add(idx, systemMsgStyle.Render("  "+systemPrefix+" "+line[8:]))
+			contentWidth := max(20, m.chatWidth()-4)
+			wrapped := lipgloss.NewStyle().Width(contentWidth).Render(line[8:])
+			wrappedLines := strings.Split(wrapped, "\n")
+			for i, wl := range wrappedLines {
+				if i == 0 {
+					add(idx, systemMsgStyle.Render("  "+systemPrefix+" "+wl))
+				} else {
+					add(idx, systemMsgStyle.Render("    "+wl))
+				}
+			}
 		} else if strings.HasPrefix(line, "toolstream:") {
 			add(idx, m.renderToolStreamLine(line)...)
 		} else if strings.HasPrefix(line, "toolprogress:") {
@@ -950,21 +988,70 @@ func (m Model) buildFormattedLineItems() []formattedLineItem {
 		} else if strings.HasPrefix(line, "tool:") {
 			add(idx, m.renderToolLine(line)...)
 		} else if strings.HasPrefix(line, "tool rejected: ") {
-			add(idx, lipgloss.NewStyle().Foreground(colorRed).Bold(true).Render("  tool rejected: "+line[15:]))
+			contentWidth := max(20, m.chatWidth()-17)
+			wrapped := lipgloss.NewStyle().Width(contentWidth).Render(line[15:])
+			wrappedLines := strings.Split(wrapped, "\n")
+			style := lipgloss.NewStyle().Foreground(colorRed).Bold(true)
+			for i, wl := range wrappedLines {
+				if i == 0 {
+					add(idx, style.Render("  tool rejected: "+wl))
+				} else {
+					add(idx, style.Render("                 "+wl))
+				}
+			}
 		} else if strings.HasPrefix(line, "tool error: ") {
-			add(idx, lipgloss.NewStyle().Foreground(colorRed).Bold(true).Render("  tool error: "+line[12:]))
+			contentWidth := max(20, m.chatWidth()-14)
+			wrapped := lipgloss.NewStyle().Width(contentWidth).Render(line[12:])
+			wrappedLines := strings.Split(wrapped, "\n")
+			style := lipgloss.NewStyle().Foreground(colorRed).Bold(true)
+			for i, wl := range wrappedLines {
+				if i == 0 {
+					add(idx, style.Render("  tool error: "+wl))
+				} else {
+					add(idx, style.Render("              "+wl))
+				}
+			}
 		} else if strings.HasPrefix(line, "stats: ") {
 			add(idx, m.renderStatsLine(line)...)
 		} else if strings.HasPrefix(line, "usage: ") {
-			add(idx, lipgloss.NewStyle().Foreground(colorDim).Render("  usage: "+line[7:]))
+			contentWidth := max(20, m.chatWidth()-9)
+			wrapped := lipgloss.NewStyle().Width(contentWidth).Render(line[7:])
+			wrappedLines := strings.Split(wrapped, "\n")
+			style := lipgloss.NewStyle().Foreground(colorDim)
+			for i, wl := range wrappedLines {
+				if i == 0 {
+					add(idx, style.Render("  usage: "+wl))
+				} else {
+					add(idx, style.Render("         "+wl))
+				}
+			}
 		} else if strings.HasPrefix(line, "policy: ") {
-			add(idx, lipgloss.NewStyle().Foreground(colorAmber).Render("  policy: "+line[8:]))
+			contentWidth := max(20, m.chatWidth()-10)
+			wrapped := lipgloss.NewStyle().Width(contentWidth).Render(line[8:])
+			wrappedLines := strings.Split(wrapped, "\n")
+			style := lipgloss.NewStyle().Foreground(colorAmber)
+			for i, wl := range wrappedLines {
+				if i == 0 {
+					add(idx, style.Render("  policy: "+wl))
+				} else {
+					add(idx, style.Render("          "+wl))
+				}
+			}
 		} else if strings.HasPrefix(line, "md: ") {
 			add(idx, renderCommandOutputLine(line[4:]))
 		} else if line == "" {
 			add(idx, "")
 		} else {
-			add(idx, systemMsgStyle.Render("  "+systemPrefix+" "+line))
+			contentWidth := max(20, m.chatWidth()-4)
+			wrapped := lipgloss.NewStyle().Width(contentWidth).Render(line)
+			wrappedLines := strings.Split(wrapped, "\n")
+			for i, wl := range wrappedLines {
+				if i == 0 {
+					add(idx, systemMsgStyle.Render("  "+systemPrefix+" "+wl))
+				} else {
+					add(idx, systemMsgStyle.Render("    "+wl))
+				}
+			}
 		}
 	}
 
@@ -1489,6 +1576,10 @@ func (m Model) View() string {
 		if m.featuresModal != nil {
 			body = centerOverlay(m.width, m.viewport.Height, m.featuresModal.View(m.width, m.viewport.Height))
 		}
+	case modalTools:
+		if m.toolsModal != nil {
+			body = centerOverlay(m.width, m.viewport.Height, m.toolsModal.View(m.width, m.viewport.Height))
+		}
 	}
 
 	if autocomplete != "" {
@@ -1742,6 +1833,7 @@ func (m *Model) closeModal() {
 	m.helpModal = nil
 	m.settingsModal = nil
 	m.featuresModal = nil
+	m.toolsModal = nil
 }
 
 func (m Model) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1754,6 +1846,8 @@ func (m Model) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateSettingsModal(msg)
 	case modalFeatures:
 		return m.updateFeaturesModal(msg)
+	case modalTools:
+		return m.updateToolsModal(msg)
 	}
 	return m, nil
 }
@@ -2124,6 +2218,61 @@ func (m Model) updateFeaturesModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// Tools modal
+
+func (m *Model) openToolsModal() {
+	tm := NewToolsModal(m.allTools, m.disabledTools)
+	m.toolsModal = &tm
+	m.activeModal = modalTools
+}
+
+func (m Model) updateToolsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.toolsModal == nil {
+		m.closeModal()
+		return m, nil
+	}
+	tm := m.toolsModal
+
+	switch msg.String() {
+	case "esc":
+		m.closeModal()
+		return m, nil
+	case "tab", "down", "j":
+		tm.MoveDown()
+		return m, nil
+	case "shift+tab", "up", "k":
+		tm.MoveUp()
+		return m, nil
+	case " ", "enter":
+		tm.Toggle()
+		return m, nil
+	case "a":
+		tm.EnableAll()
+		return m, nil
+	case "n":
+		tm.DisableAll()
+		return m, nil
+	case "ctrl+s":
+		// Collect disabled tools
+		disabledList := []string{}
+		for _, tool := range tm.Tools {
+			if !tool.Enabled {
+				disabledList = append(disabledList, tool.Name)
+			}
+		}
+		m.disabledTools = disabledList
+
+		// Build /set command for TUI runner
+		cmdText := "/set disabled_tools=" + strings.Join(disabledList, ",")
+
+		m.closeModal()
+		m.lines = append(m.lines, "system: tools configuration saved")
+		m.syncViewport(true)
+		return m, runHandler(m.handler, cmdText, false)
+	}
+	return m, nil
+}
+
 // ---------------------------------------------------------------------------
 // Header
 // ---------------------------------------------------------------------------
@@ -2393,6 +2542,9 @@ func (m *Model) handleLocalCommand(value string) (bool, tea.Cmd) {
 		case "/features":
 			m.openFeaturesModal()
 			return true, nil
+		case "/tools":
+			m.openToolsModal()
+			return true, nil
 		case "/help":
 			m.openHelpModal()
 			return true, nil
@@ -2515,6 +2667,17 @@ func (m *Model) applyOptimisticCommand(value string) {
 				m.negativeContext = value != "off"
 			case "skills":
 				m.skills = value != "off"
+			case "disabled_tools", "disabled-tools":
+				if value == "" {
+					m.disabledTools = nil
+				} else {
+					parts := strings.Split(value, ",")
+					cleaned := []string{}
+					for _, p := range parts {
+						cleaned = append(cleaned, strings.TrimSpace(p))
+					}
+					m.disabledTools = cleaned
+				}
 			case "fast_model":
 				m.fastModel = value
 			case "edit_model":

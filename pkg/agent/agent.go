@@ -558,6 +558,7 @@ Operate through the tools, not guesses.
 
 General principles:
 - Spend tokens like they are expensive. Do not inspect files, sessions, logs, .env, or broad repo maps unless they are needed for the user's concrete task.
+- Always prefer using specific built-in tools (such as read_file, create_file, replace_lines, search, etc.) over executing raw shell commands via bash. Never use bash for tasks that can be performed with built-in tools.
 - Use web_search/fetch_url for current or external internet facts, and cite URLs in the answer.
 - Treat mcp_* tools as external capabilities: use them only when their name/description fits the task.
 - After any tool failure, read the observation, change strategy once, and do not repeat the same failed call with the same arguments.

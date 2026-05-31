@@ -29,15 +29,39 @@ type Tool interface {
 }
 
 type Registry struct {
-	tools map[string]Tool
+	tools    map[string]Tool
+	disabled map[string]bool
 }
 
 func NewRegistry(toolList ...Tool) *Registry {
-	registry := &Registry{tools: make(map[string]Tool, len(toolList))}
+	registry := &Registry{
+		tools:    make(map[string]Tool, len(toolList)),
+		disabled: make(map[string]bool),
+	}
 	for _, tool := range toolList {
 		registry.Register(tool)
 	}
 	return registry
+}
+
+func (r *Registry) SetDisabled(disabledList []string) {
+	if r.disabled == nil {
+		r.disabled = make(map[string]bool)
+	} else {
+		for k := range r.disabled {
+			delete(r.disabled, k)
+		}
+	}
+	for _, name := range disabledList {
+		r.disabled[name] = true
+	}
+}
+
+func (r *Registry) IsDisabled(name string) bool {
+	if r.disabled == nil {
+		return false
+	}
+	return r.disabled[name]
 }
 
 func NewDefaultRegistry() *Registry {
@@ -181,6 +205,9 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 		}
 	}
 	for name := range names {
+		if r.disabled != nil && r.disabled[name] {
+			continue
+		}
 		if tool, ok := r.tools[name]; ok {
 			specs = append(specs, tool.Spec())
 		}
@@ -198,6 +225,9 @@ func (r *Registry) RunWithSandbox(ctx context.Context, cwd string, sandbox strin
 }
 
 func (r *Registry) RunWithPolicy(ctx context.Context, cwd string, sandbox string, mode string, contextFiles []string, call llm.ToolCall) (Result, error) {
+	if r.disabled != nil && r.disabled[call.Name] {
+		return Result{}, fmt.Errorf("tool %q is disabled", call.Name)
+	}
 	tool, ok := r.tools[call.Name]
 	if !ok {
 		return Result{}, fmt.Errorf("unknown tool %q", call.Name)

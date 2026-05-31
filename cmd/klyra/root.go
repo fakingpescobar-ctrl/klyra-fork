@@ -411,7 +411,7 @@ func newTUICommand(opts *options) *cobra.Command {
 				{Name: "/attachments", Description: "Show pending image attachments"},
 				{Name: "/skills", Description: "Show matched project skills"},
 				{Name: "/doctor", Description: "Check local runtime support"},
-				{Name: "/tools", Description: "List available agent tools"},
+				{Name: "/tools", Description: "Toggle agent tools on/off"},
 				{Name: "/instructions", Description: "Show project instruction files"},
 				{Name: "/sessions", Description: "List saved workspace sessions"},
 				{Name: "/checkpoint", Description: "Open checkpoint actions"},
@@ -746,6 +746,14 @@ func newTUICommand(opts *options) *cobra.Command {
 				return strings.TrimSpace(result.Final + "\n\n" + debug + "\n\n" + usageStr), err
 			}
 
+			allToolsRegistry, _ := buildToolRegistry(context.Background(), runtimeCfg)
+			var allToolsList []string
+			if allToolsRegistry != nil {
+				for _, spec := range allToolsRegistry.Specs() {
+					allToolsList = append(allToolsList, spec.Name)
+				}
+			}
+
 			tuiModel := tui.New(tui.Config{
 				CWD:                    opts.cwd,
 				Title:                  "Klyra",
@@ -783,6 +791,8 @@ func newTUICommand(opts *options) *cobra.Command {
 				FastModel:              runtimeCfg.ModelRoutes["fast"],
 				EditModel:              runtimeCfg.ModelRoutes["edit"],
 				DeepModel:              runtimeCfg.ModelRoutes["deep"],
+				AllTools:               allToolsList,
+				DisabledTools:          runtimeCfg.DisabledTools,
 				Handler:                handler,
 				Interrupt: func() bool {
 					activeMu.Lock()
@@ -1164,6 +1174,19 @@ func applyTUISet(cfg *appconfig.Config, args []string) error {
 			setModelRoute(cfg, "edit", value)
 		case "deep_model", "deep-model":
 			setModelRoute(cfg, "deep", value)
+		case "disabled_tools", "disabled-tools":
+			if value == "" {
+				cfg.DisabledTools = nil
+			} else {
+				parts := strings.Split(value, ",")
+				cleaned := []string{}
+				for _, p := range parts {
+					if t := strings.TrimSpace(p); t != "" {
+						cleaned = append(cleaned, t)
+					}
+				}
+				cfg.DisabledTools = cleaned
+			}
 		default:
 			return fmt.Errorf("unknown setting %q", key)
 		}
@@ -1709,7 +1732,11 @@ func newToolsCommand(opts *options) *cobra.Command {
 			specs := registry.Specs()
 			sort.Slice(specs, func(i, j int) bool { return specs[i].Name < specs[j].Name })
 			for _, spec := range specs {
-				fmt.Fprintf(cmd.OutOrStdout(), "%-16s %s\n", spec.Name, spec.Description)
+				status := "enabled"
+				if registry.IsDisabled(spec.Name) {
+					status = "disabled"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%-24s [%s] %s\n", spec.Name, status, spec.Description)
 			}
 			return nil
 		},
@@ -2221,6 +2248,7 @@ func providerBaseURL(cfg appconfig.Config, provider string) string {
 
 func buildToolRegistry(ctx context.Context, cfg appconfig.Config) (*tools.Registry, error) {
 	registry := tools.NewDefaultRegistry()
+	registry.SetDisabled(cfg.DisabledTools)
 	servers := configuredMCPServers(cfg)
 	if len(servers) == 0 {
 		return registry, nil

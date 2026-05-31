@@ -40,6 +40,7 @@ type Config struct {
 	Skills                 bool                 `json:"skills"`
 	MCPServers             map[string]MCPServer `json:"mcp_servers,omitempty"`
 	StoreResponses         bool                 `json:"store_responses"`
+	DisabledTools          []string             `json:"disabled_tools,omitempty"`
 	Profiles               map[string]Profile   `json:"profiles,omitempty"`
 }
 
@@ -82,6 +83,7 @@ type Profile struct {
 	Skills                 *bool                `json:"skills,omitempty"`
 	MCPServers             map[string]MCPServer `json:"mcp_servers,omitempty"`
 	StoreResponses         *bool                `json:"store_responses,omitempty"`
+	DisabledTools          []string             `json:"disabled_tools,omitempty"`
 }
 
 func Default() Config {
@@ -366,6 +368,9 @@ func (c Config) WithProfile(name string) (Config, error) {
 	}
 	if profile.StoreResponses != nil {
 		c.StoreResponses = *profile.StoreResponses
+	}
+	if profile.DisabledTools != nil {
+		c.DisabledTools = append([]string(nil), profile.DisabledTools...)
 	}
 	return c, nil
 }

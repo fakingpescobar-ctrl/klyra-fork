@@ -136,6 +136,7 @@ func (h *HelpModal) View(termWidth, termHeight int) string {
 	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("F7    "), cmdDescStyle.Render("Cycle sidebar mode (files/diff/context)")))
 	allLines = append(allLines, fmt.Sprintf("  %s  %s", kbdStyle.Render("Alt+F7  "), cmdDescStyle.Render("Toggle sidebar visibility")))
 	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("F8    "), cmdDescStyle.Render("Toggle sidebar position (left/right)")))
+	allLines = append(allLines, fmt.Sprintf("  %s      %s", kbdStyle.Render("F9    "), cmdDescStyle.Render("Toggle agent tools on/off")))
 
 	for i, cat := range h.Categories {
 		if i == 0 {
