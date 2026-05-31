@@ -113,25 +113,34 @@ func (r *Registry) SpecsForTask(task string) []llm.ToolSpec {
 func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []llm.ToolSpec {
 	task = strings.ToLower(task)
 	mode = strings.ToLower(strings.TrimSpace(mode))
-	names := map[string]bool{
-		"guide":        true,
-		"project_map":  true,
-		"search":       true,
-		"file_outline": true,
-		"read_file":    true,
-		"read_symbol":  true,
-		"git_status":   true,
-		"policy_check": true,
-		"web_search":   true,
-		"fetch_url":    true,
+	writeIntent := mentionsEdit(task)
+	shellIntent := mentionsShell(task)
+	testIntent := mentionsTest(task)
+	webIntent := mentionsWeb(task)
+	codeIntent := len(contextFiles) > 0 || writeIntent || shellIntent || testIntent || mentionsCodeWorkspace(task)
+	names := map[string]bool{}
+
+	if codeIntent {
+		names["guide"] = true
+		names["project_map"] = true
+		names["search"] = true
+		names["file_outline"] = true
+		names["read_file"] = true
+		names["read_symbol"] = true
+		names["git_status"] = true
+		names["policy_check"] = true
+	}
+	if webIntent {
+		names["guide"] = true
+		names["web_search"] = true
+		names["fetch_url"] = true
 	}
 	if mentionsGo(task) {
 		names["read_go_symbol"] = true
 	}
-	if mentionsShell(task) || mentionsTest(task) {
+	if shellIntent || testIntent {
 		names["bash"] = true
 	}
-	writeIntent := mentionsEdit(task)
 	skillCreateIntent := mentionsSkill(task) && writeIntent
 	focusedSkillCreation := skillCreateIntent && mode == "edit" && len(contextFiles) == 0
 	if focusedSkillCreation {
@@ -194,7 +203,7 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 			delete(names, "write_file")
 		}
 	}
-	if len(task) < 80 && !mentionsEdit(task) && !mentionsShell(task) {
+	if codeIntent && len(task) < 80 && !writeIntent && !shellIntent {
 		names["list_files"] = true
 	}
 
@@ -384,6 +393,16 @@ func mentionsGo(task string) bool {
 	return strings.Contains(task, ".go") || strings.Contains(task, " go ") || strings.Contains(task, "golang")
 }
 
+func mentionsCodeWorkspace(task string) bool {
+	return containsAny(task, []string{
+		"repo", "repository", "project", "workspace", "codebase", "file", "directory", "folder",
+		"function", "class", "method", "module", "package", "bug", "error", "stack trace",
+		"репо", "репозитор", "проект", "воркспейс", "код", "кодовая база", "файл", "папк",
+		"директор", "функц", "класс", "метод", "модул", "пакет", "баг", "ошибк", "трейс",
+		".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".java", ".md", ".json", ".yaml", ".yml",
+	})
+}
+
 func mentionsShell(task string) bool {
 	return containsAny(task, []string{"run ", "запусти", "команд", "bash", "shell", "terminal", "build", "сбор", "lint", "test", "тест"})
 }
@@ -410,7 +429,9 @@ func mentionsSkill(task string) bool {
 func mentionsWeb(task string) bool {
 	return containsAny(task, []string{
 		"http://", "https://", "web", "internet", "online", "site", "url", "latest", "current", "today", "news",
+		"twitch", "youtube", "github.com", "reddit", "twitter", "x.com",
 		"интернет", "в интернете", "веб", "сайт", "ссылк", "url", "актуаль", "последн", "новост", "сегодня", "найди в сети",
+		"твитч", "ютуб", "канал", "страниц",
 	})
 }
 

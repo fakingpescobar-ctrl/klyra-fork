@@ -31,6 +31,30 @@ func TestSpecsForTaskIncludesEditToolsForImplementation(t *testing.T) {
 	}
 }
 
+func TestSpecsForSimpleChatHidesWorkspaceTools(t *testing.T) {
+	specs := NewDefaultRegistry().SpecsForTask("привет, как дела?")
+	if len(specs) != 0 {
+		t.Fatalf("simple chat should not pay for tool schemas: %+v", specs)
+	}
+}
+
+func TestSpecsForWebTaskUsesOnlyWebTools(t *testing.T) {
+	specs := NewDefaultRegistry().SpecsForTask("найди twitch канал furrydev2007")
+	if !hasSpec(specs, "web_search") || !hasSpec(specs, "fetch_url") || !hasSpec(specs, "guide") {
+		t.Fatalf("web task should expose web tools and guide: %+v", specs)
+	}
+	if hasSpec(specs, "project_map") || hasSpec(specs, "read_file") || hasSpec(specs, "git_status") || hasSpec(specs, "bash") {
+		t.Fatalf("web task should not expose workspace tools: %+v", specs)
+	}
+}
+
+func TestSpecsForCodeQuestionUsesWorkspaceTools(t *testing.T) {
+	specs := NewDefaultRegistry().SpecsForTask("что в файле pkg/agent/agent.go?")
+	if !hasSpec(specs, "project_map") || !hasSpec(specs, "read_file") || !hasSpec(specs, "file_outline") {
+		t.Fatalf("code/file question should expose workspace tools: %+v", specs)
+	}
+}
+
 func TestEditModeExposesCreateFileForSkillCreationWithoutContextCart(t *testing.T) {
 	specs := NewDefaultRegistry().SpecsForTaskMode("напиши сам себе скилл для issue summary", "edit", nil)
 	if !hasSpec(specs, "create_file") {

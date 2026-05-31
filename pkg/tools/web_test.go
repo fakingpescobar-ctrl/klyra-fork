@@ -130,10 +130,10 @@ func TestWebToolsExposedForInternetTasks(t *testing.T) {
 	}
 }
 
-func TestWebToolsAlwaysMatchSystemPrompt(t *testing.T) {
+func TestWebToolsHiddenForNonWebTasks(t *testing.T) {
 	specs := NewDefaultRegistry().SpecsForTask("что ты умеешь")
-	if !hasToolSpec(specs, "web_search") || !hasToolSpec(specs, "fetch_url") {
-		t.Fatalf("system prompt mentions web tools, so they must always be exposed: %+v", specs)
+	if hasToolSpec(specs, "web_search") || hasToolSpec(specs, "fetch_url") {
+		t.Fatalf("non-web task should not pay for web tool schemas: %+v", specs)
 	}
 }
 
