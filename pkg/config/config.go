@@ -115,6 +115,7 @@ func Default() Config {
 		ContextRecipes:         true,
 		NegativeContext:        true,
 		Skills:                 true,
+		DisabledTools:          []string{"write_file"},
 		Profiles: map[string]Profile{
 			"local": {
 				Provider: "mock",

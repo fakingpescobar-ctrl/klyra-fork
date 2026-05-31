@@ -15,7 +15,7 @@ type BashRunner struct{}
 func (BashRunner) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        "bash",
-		Description: "Run a workspace shell command and return compressed output.",
+		Description: "Last-resort workspace shell command for tests/builds/git or commands no built-in tool can do. Prefer built-in tools first.",
 		Parameters: objectSchema(map[string]any{
 			"command":         stringProperty("Command to execute."),
 			"timeout_seconds": integerProperty("Timeout in seconds.", 1),

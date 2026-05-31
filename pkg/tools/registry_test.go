@@ -38,6 +38,13 @@ func TestSpecsForSimpleChatHidesWorkspaceTools(t *testing.T) {
 	}
 }
 
+func TestSpecsHideLegacyWriteFile(t *testing.T) {
+	specs := NewDefaultRegistry().Specs()
+	if hasSpec(specs, "write_file") {
+		t.Fatalf("legacy write_file should not be exposed in tool schemas: %+v", specs)
+	}
+}
+
 func TestSpecsForWebTaskUsesOnlyWebTools(t *testing.T) {
 	specs := NewDefaultRegistry().SpecsForTask("найди twitch канал furrydev2007")
 	if !hasSpec(specs, "web_search") || !hasSpec(specs, "fetch_url") || !hasSpec(specs, "guide") {

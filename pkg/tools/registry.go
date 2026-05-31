@@ -99,7 +99,10 @@ func (r *Registry) Register(tool Tool) {
 
 func (r *Registry) Specs() []llm.ToolSpec {
 	specs := make([]llm.ToolSpec, 0, len(r.tools))
-	for _, tool := range r.tools {
+	for name, tool := range r.tools {
+		if isHiddenToolSpec(name) {
+			continue
+		}
 		specs = append(specs, tool.Spec())
 	}
 	sortSpecs(specs)
@@ -214,6 +217,9 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 		}
 	}
 	for name := range names {
+		if isHiddenToolSpec(name) {
+			continue
+		}
 		if r.disabled != nil && r.disabled[name] {
 			continue
 		}
@@ -223,6 +229,10 @@ func (r *Registry) SpecsForTaskMode(task, mode string, contextFiles []string) []
 	}
 	sortSpecs(specs)
 	return specs
+}
+
+func isHiddenToolSpec(name string) bool {
+	return name == "write_file"
 }
 
 func (r *Registry) Run(ctx context.Context, cwd string, call llm.ToolCall) (Result, error) {

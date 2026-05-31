@@ -14,7 +14,7 @@ type Search struct{}
 func (Search) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        "search",
-		Description: "Search workspace text with ripgrep and compressed output.",
+		Description: "Search workspace text with ripgrep; skips secrets, sessions, generated, and dependency dirs.",
 		Parameters: objectSchema(map[string]any{
 			"pattern":   stringProperty("Search pattern."),
 			"glob":      stringProperty("Optional file glob."),
@@ -37,10 +37,7 @@ func (Search) Run(ctx context.Context, inv Invocation) (Result, error) {
 		return Result{}, err
 	}
 
-	args := []string{"--line-number", "--hidden", "--glob", "!.git", pattern}
-	if glob != "" {
-		args = append([]string{"--line-number", "--hidden", "--glob", "!.git", "--glob", glob}, pattern)
-	}
+	args := defaultSearchArgs(pattern, glob)
 	cmd := exec.CommandContext(ctx, "rg", args...)
 	cmd.Dir = inv.CWD
 	var stdout bytes.Buffer
@@ -59,4 +56,30 @@ func (Search) Run(ctx context.Context, inv Invocation) (Result, error) {
 		return Result{Output: CompressOutput(output, maxLines)}, fmt.Errorf("search failed: %w", err)
 	}
 	return Result{Output: CompressOutput(output, maxLines)}, nil
+}
+
+func defaultSearchArgs(pattern, userGlob string) []string {
+	args := []string{"--line-number", "--hidden"}
+	for _, glob := range []string{
+		"!.git",
+		"!.agentcli",
+		"!node_modules",
+		"!dist",
+		"!build",
+		"!.cache",
+		"!.next",
+		"!vendor",
+		"!.env",
+		"!.env.*",
+		"!*.pem",
+		"!*.key",
+		"!*.p12",
+		"!*.pfx",
+	} {
+		args = append(args, "--glob", glob)
+	}
+	if userGlob != "" {
+		args = append(args, "--glob", userGlob)
+	}
+	return append(args, pattern)
 }

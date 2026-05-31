@@ -53,6 +53,9 @@ func TestLoadMissingReturnsDefault(t *testing.T) {
 	if cfg.ContextCockpitMaxCards != 10 || cfg.ContextRetrievalTokens != 1000 || cfg.ContextRetrievalChunks != 10 || !cfg.ContextEmbeddings || cfg.ContextReranker {
 		t.Fatalf("expected retrieval MVP defaults, got %+v", cfg)
 	}
+	if len(cfg.DisabledTools) != 1 || cfg.DisabledTools[0] != "write_file" {
+		t.Fatalf("expected write_file disabled by default, got %+v", cfg.DisabledTools)
+	}
 }
 
 func TestLoadOldConfigDefaultsNewContextBooleansOn(t *testing.T) {

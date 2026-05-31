@@ -76,12 +76,16 @@ func shouldSkipDir(name string) bool {
 }
 
 func shouldSkipFile(name string) bool {
+	lower := strings.ToLower(name)
 	switch name {
-	case ".DS_Store":
+	case ".DS_Store", ".env":
 		return true
-	default:
-		return false
 	}
+	return strings.HasPrefix(lower, ".env.") ||
+		strings.HasSuffix(lower, ".pem") ||
+		strings.HasSuffix(lower, ".key") ||
+		strings.HasSuffix(lower, ".p12") ||
+		strings.HasSuffix(lower, ".pfx")
 }
 
 type FileReader struct{}
@@ -143,7 +147,7 @@ type FileWriter struct{}
 func (FileWriter) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        "write_file",
-		Description: "Legacy full-file writer. Prefer create_file for new files and focused edit tools for existing files.",
+		Description: "Disabled legacy full-file writer. Use create_file for new files and focused edit tools for existing files.",
 		Parameters: objectSchema(map[string]any{
 			"path":    stringProperty("Relative file path."),
 			"content": stringProperty("Complete file content."),
