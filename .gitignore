@@ -2,5 +2,8 @@
 /agentcli
 .agentcli/
 /klyra
+/klyra.exe
+*.exe
 .klyra/
 .env
+.github/workflows/
