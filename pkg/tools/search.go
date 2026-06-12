@@ -61,7 +61,9 @@ func (Search) Run(ctx context.Context, inv Invocation) (Result, error) {
 }
 
 func defaultSearchArgs(pattern, userGlob string, ignorePatterns []string) []string {
-	args := []string{"--line-number", "--hidden"}
+	// Force forward-slash path separators so output is consistent across
+	// platforms (ripgrep prints backslashes on Windows by default).
+	args := []string{"--line-number", "--hidden", "--path-separator", "/"}
 	for _, glob := range []string{
 		"!.git",
 		"!.agentcli",

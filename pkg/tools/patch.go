@@ -103,7 +103,9 @@ func (DiffPreview) Run(ctx context.Context, inv Invocation) (Result, error) {
 }
 
 func runGitApply(ctx context.Context, cwd, patch string, maxLines int, args ...string) (Result, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"apply"}, args...)...)
+	// Force core.autocrlf=false so patch application never rewrites line endings,
+	// regardless of the user's global git config (autocrlf=true is common on Windows).
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.autocrlf=false", "apply"}, args...)...)
 	cmd.Dir = cwd
 	cmd.Stdin = bytes.NewBufferString(patch)
 	var stdout bytes.Buffer
