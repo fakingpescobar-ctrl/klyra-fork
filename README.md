@@ -342,7 +342,7 @@ cfg := agent.Config{
 }
 ```
 
-### Изменённые файлы
+### Изменённые файлы (итерация 1)
 
 | Файл | Что изменилось |
 |------|----------------|
@@ -351,3 +351,71 @@ cfg := agent.Config{
 | `pkg/llm/ollama.go` | Новый файл: провайдер Ollama |
 | `pkg/context/window.go` | Калибровка токенов через `CalibrateFrom()` |
 | `pkg/tools/registry.go` | Регистрация `sub_agent` в реестре инструментов |
+
+---
+
+## Улучшения итерации 2
+
+Вторая волна из 8 исправлений и доработок поверх итерации 1:
+
+### 9. Поддержка Windows для `bash`
+Инструмент `bash` теперь использует `cmd /c` на Windows вместо `bash -lc`. До этого инструмент всегда падал без WSL.
+
+### 10. SIGINT / Ctrl+C в `run` и `chat`
+Команды `run` и `chat` теперь создают контекст через `signal.NotifyContext(os.Interrupt, syscall.SIGTERM)`. Ctx.Done-проверки в агенте (#7 из итерации 1) теперь реально работают при нажатии Ctrl+C.
+
+### 11. `sub_agent` подключён к CLI
+`DefaultSubAgentFactory` теперь выставляется в `runCmd`, `newChatCommand` и `newTUICommand`. До этого инструмент `sub_agent` был зарегистрирован, но никогда не использовался.
+
+### 12. Изоляция дочернего агента
+`DefaultSubAgentFactory` теперь сбрасывает в дочернем агенте: `Output`, `Input`, `StreamHandler`, `ReasoningHandler`, `ToolProgress`, `Approver`. Результат дочернего агента возвращается строкой, не смешивается с выводом родителя.
+
+### 13. Хелпер `buildBaseAgentConfig`
+Блок заполнения `agent.Config{}` был продублирован дословно в `runCmd`, `newChatCommand` и `newTUICommand` (~50 строк × 3). Заменён одним хелпером. При добавлении поля в `Config` теперь достаточно поменять одно место.
+
+### 14. Флаг `--json` для `run`
+
+```sh
+klyra --provider anthropic run --json "объясни этот код"
+```
+
+Выводит машиночитаемый JSON:
+
+```json
+{
+  "result": "...",
+  "usage": { "input": 1234, "output": 456, "total": 1690 }
+}
+```
+
+### 15. `/cart remove` и `/cart clear` в TUI
+
+```text
+/cart add pkg/auth/middleware.go
+/cart remove pkg/auth/middleware.go
+/cart clear
+```
+
+До этого добавить файл в корзину можно было, убрать — нет.
+
+### 16. `sessions delete` и `sessions prune`
+
+```sh
+klyra sessions delete feature-work
+klyra sessions prune --days 14
+```
+
+В TUI: `/sessions delete <id>`, `/sessions prune --days=30`. Сессии больше не копятся бесконечно.
+
+### Логирование калибровки токенов
+`CalibrateFrom()` теперь логирует обновление коэффициента через `slog.Debug` — видно в структурированных логах при `SLOG_LEVEL=DEBUG`.
+
+### Изменённые файлы (итерация 2)
+
+| Файл | Что изменилось |
+|------|----------------|
+| `pkg/tools/bash.go` | Windows: `cmd /c` вместо `bash -lc` |
+| `pkg/session/store.go` | Новые методы `Delete()` и `Prune()` |
+| `pkg/context/window.go` | `slog.Debug` в `CalibrateFrom()` |
+| `pkg/agent/subagent.go` | Дочерний агент изолирован (сброс IO/handlers) |
+| `cmd/klyra/root.go` | `buildBaseAgentConfig`, SIGINT, sub_agent, `--json`, `/cart remove/clear`, `sessions delete/prune` |
