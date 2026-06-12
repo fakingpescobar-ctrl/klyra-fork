@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"klyra/pkg/cockpit"
@@ -18,6 +20,11 @@ import (
 	"klyra/pkg/router"
 	"klyra/pkg/skills"
 	"klyra/pkg/tools"
+)
+
+const (
+	maxToolOutputBytes = 32 * 1024 // truncate tool outputs above 32 KB (#3)
+	maxLLMRetries      = 3         // max retry attempts for transient LLM errors (#2)
 )
 
 type Config struct {
@@ -59,6 +66,10 @@ type Config struct {
 	StreamHandler          llm.StreamHandler
 	ReasoningHandler       func(string) error
 	ToolProgress           func(ToolProgressEvent) error
+	// Logger receives structured log events. Defaults to slog.Default(). (#8)
+	Logger *slog.Logger
+	// SubAgentFactory enables the sub_agent tool. Nil disables it. (#5)
+	SubAgentFactory SubAgentFactory
 }
 
 type ApprovalFunc func(ApprovalRequest) (bool, error)
@@ -99,6 +110,23 @@ type ContextDebug struct {
 	CockpitTokens int
 }
 
+// pendingCall holds the pre-checked state of a tool call before execution. (#1)
+type pendingCall struct {
+	call  llm.ToolCall
+	sig   string
+	skip  bool   // skip execution (dedup hit or policy rejected)
+	obs   string // pre-computed observation for skipped calls
+	err   error  // the reason for skipping (used in progress events)
+	phase string // progress phase for skipped calls: "error" or "rejected"
+	abort error  // non-nil means return this error after processing this call
+}
+
+// execOutcome holds the result of a parallel tool execution. (#1)
+type execOutcome struct {
+	result tools.Result
+	err    error
+}
+
 func New(cfg Config) (*Agent, error) {
 	if cfg.Provider == nil {
 		return nil, fmt.Errorf("provider is required")
@@ -127,6 +155,9 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.CWD == "" {
 		cfg.CWD = "."
 	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default() // (#8)
+	}
 	absCWD, err := filepath.Abs(cfg.CWD)
 	if err != nil {
 		return nil, err
@@ -143,6 +174,10 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if cfg.ContextCockpitMaxCards <= 0 {
 		cfg.ContextCockpitMaxCards = cockpit.DefaultMaxCards
+	}
+	// Register sub_agent tool if a factory is provided. (#5)
+	if cfg.SubAgentFactory != nil {
+		cfg.Tools.Register(subAgentTool{factory: cfg.SubAgentFactory})
 	}
 	systemMessage := strings.TrimSpace(cfg.SystemMessage)
 	if systemMessage == "" {
@@ -233,7 +268,13 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 	guideCompleted := false
 	repeatedGuideCalls := 0
 	repeatedPlanCalls := 0
+
 	for step := 1; step <= a.cfg.MaxSteps; step++ {
+		// (#7) Respect context cancellation between steps.
+		if err := ctx.Err(); err != nil {
+			return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, err
+		}
+
 		specs := a.cfg.Tools.SpecsForCapabilities(task, a.cfg.Mode, a.cfg.ContextFiles, runCapabilities)
 		lastDebug = a.contextDebug(specs)
 		if scopedErr != nil {
@@ -256,11 +297,12 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 			ReasoningEffort: a.cfg.Reasoning,
 			Store:           a.cfg.Store,
 		}
-		resp, streamed, err := a.complete(ctx, req)
+		resp, streamed, err := a.complete(ctx, req) // (#2) retry wrapper
 		if err != nil {
 			return RunResult{Final: final, Messages: window.Messages(), Usage: lastUsage, ContextDebug: lastDebug}, err
 		}
 		lastUsage = mergeUsage(lastUsage, resp.Usage)
+		window.CalibrateFrom(resp.Usage.InputTokens) // (#6) calibrate token estimates
 
 		resp.ToolCalls = ensureToolCallIDs(resp.ToolCalls, step)
 		if strings.TrimSpace(resp.Content) != "" || len(resp.ToolCalls) > 0 {
@@ -276,94 +318,160 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 			return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, nil
 		}
 
+		// ── (#1) Parallel tool execution ─────────────────────────────────────
+		//
+		// Phase 1 (sequential): pre-check every call for dedup / approval.
+		// Phase 2 (parallel):   execute all approved calls concurrently.
+		// Phase 3 (sequential): apply results to window in original order.
+		//
+		// Approval prompts are interactive and must stay sequential.
+		// Window writes must stay in order so the LLM sees a consistent history.
+
+		pending := make([]pendingCall, 0, len(resp.ToolCalls))
+
 		for _, call := range resp.ToolCalls {
 			fmt.Fprintf(a.cfg.Output, "tool: %s\n", call.Name)
+			a.cfg.Logger.Info("tool queued", "tool", call.Name, "id", call.ID)
 			if err := a.emitToolProgress(ToolProgressEvent{Phase: "queued", Tool: call.Name, ID: call.ID, Args: call.Arguments}); err != nil {
 				return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, err
 			}
-			signature := toolCallSignature(call)
-			if previous, repeated := successfulPlanCalls[signature]; call.Name == "update_plan" && repeated {
+
+			sig := toolCallSignature(call)
+			p := pendingCall{call: call, sig: sig}
+
+			// Dedup: repeated update_plan
+			if previous, repeated := successfulPlanCalls[sig]; call.Name == "update_plan" && repeated {
 				repeatedPlanCalls++
-				err := fmt.Errorf("repeated update_plan call suppressed; this exact plan is already current; make progress, update changed statuses, or answer the user")
-				observation := toolObservation(call, tools.Result{Output: previous.Output}, err)
-				window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: observation})
-				fmt.Fprintf(a.cfg.Output, "tool error: %v\n", err)
-				if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: "error", Tool: call.Name, ID: call.ID, Args: call.Arguments, Output: previous.Output, Error: err.Error()}); progressErr != nil {
-					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, progressErr
-				}
+				skipErr := fmt.Errorf("repeated update_plan call suppressed; this exact plan is already current; make progress, update changed statuses, or answer the user")
+				p.skip = true
+				p.obs = toolObservation(call, tools.Result{Output: previous.Output}, skipErr)
+				p.err = skipErr
+				p.phase = "error"
 				if repeatedPlanCalls >= 2 {
-					a.printUsage(lastUsage)
-					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, fmt.Errorf("agent stopped after repeated update_plan loop")
+					p.abort = fmt.Errorf("agent stopped after repeated update_plan loop")
 				}
+				pending = append(pending, p)
 				continue
 			}
+
+			// Dedup: repeated guide call
 			if call.Name == "guide" && guideCompleted {
 				repeatedGuideCalls++
-				err := fmt.Errorf("repeated guide call suppressed; guidance was already provided for this run; use a task tool or answer the user")
-				observation := toolObservation(call, tools.Result{Output: err.Error()}, err)
-				window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: observation})
-				fmt.Fprintf(a.cfg.Output, "tool error: %v\n", err)
-				if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: "error", Tool: call.Name, ID: call.ID, Args: call.Arguments, Output: err.Error(), Error: err.Error()}); progressErr != nil {
-					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, progressErr
-				}
+				skipErr := fmt.Errorf("repeated guide call suppressed; guidance was already provided for this run; use a task tool or answer the user")
+				p.skip = true
+				p.obs = toolObservation(call, tools.Result{Output: skipErr.Error()}, skipErr)
+				p.err = skipErr
+				p.phase = "error"
 				if repeatedGuideCalls >= 2 {
-					a.printUsage(lastUsage)
-					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, fmt.Errorf("agent stopped after repeated guide loop")
+					p.abort = fmt.Errorf("agent stopped after repeated guide loop")
 				}
+				pending = append(pending, p)
 				continue
 			}
-			if previous, repeated := successfulReadCalls[signature]; tools.SuppressRepeatedSuccessfulCall(call.Name) && repeated {
-				repeatedReadCalls[signature]++
-				err := fmt.Errorf("repeated read-only tool call suppressed; the same call already returned the same available information; use the previous output, choose a different focused tool, or act on it")
-				observation := toolObservation(call, previous, err)
-				window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: observation})
-				fmt.Fprintf(a.cfg.Output, "tool error: %v\n", err)
-				if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: "error", Tool: call.Name, ID: call.ID, Args: call.Arguments, Output: previous.Output, Error: err.Error()}); progressErr != nil {
+
+			// Dedup: repeated read-only call
+			if previous, repeated := successfulReadCalls[sig]; tools.SuppressRepeatedSuccessfulCall(call.Name) && repeated {
+				repeatedReadCalls[sig]++
+				skipErr := fmt.Errorf("repeated read-only tool call suppressed; the same call already returned the same available information; use the previous output, choose a different focused tool, or act on it")
+				p.skip = true
+				p.obs = toolObservation(call, previous, skipErr)
+				p.err = skipErr
+				p.phase = "error"
+				if repeatedReadCalls[sig] >= 2 {
+					p.abort = fmt.Errorf("agent stopped after repeated no-progress %s loop", call.Name)
+				}
+				pending = append(pending, p)
+				continue
+			}
+
+			// Dedup: repeated failed call
+			if previous, repeated := failedToolCalls[sig]; repeated {
+				repeatedFailedCalls[sig]++
+				skipErr := fmt.Errorf("repeated failed tool call suppressed; previous output: %s; change strategy or use a different focused tool", strings.TrimSpace(previous.Output))
+				p.skip = true
+				p.obs = toolObservation(call, tools.Result{Output: skipErr.Error()}, skipErr)
+				p.err = skipErr
+				p.phase = "error"
+				if repeatedFailedCalls[sig] >= 2 {
+					p.abort = fmt.Errorf("agent stopped after repeated failed %s loop", call.Name)
+				}
+				pending = append(pending, p)
+				continue
+			}
+
+			// Approval check (interactive — must remain sequential)
+			if approveErr := a.approveToolCall(call); approveErr != nil {
+				p.skip = true
+				p.obs = toolObservation(call, tools.Result{Output: "tool call rejected by approval policy"}, approveErr)
+				p.err = approveErr
+				p.phase = "rejected"
+				pending = append(pending, p)
+				continue
+			}
+
+			pending = append(pending, p)
+		}
+
+		// Phase 2: parallel execution of approved calls.
+		outcomes := make([]execOutcome, len(pending))
+		var wg sync.WaitGroup
+		var progressMu sync.Mutex // guards emitToolProgress during parallel execution
+
+		for i := range pending {
+			if pending[i].skip {
+				continue
+			}
+			// (#7) Don't start new goroutines if ctx is already cancelled.
+			if ctx.Err() != nil {
+				outcomes[i] = execOutcome{err: ctx.Err()}
+				continue
+			}
+			wg.Add(1)
+			go func(idx int, call llm.ToolCall) {
+				defer wg.Done()
+				progressMu.Lock()
+				_ = a.emitToolProgress(ToolProgressEvent{Phase: "running", Tool: call.Name, ID: call.ID, Args: call.Arguments})
+				progressMu.Unlock()
+				result, err := a.cfg.Tools.RunWithPolicy(ctx, a.cfg.CWD, a.cfg.Sandbox, a.cfg.Mode, a.cfg.ContextFiles, call)
+				outcomes[idx] = execOutcome{result: result, err: err}
+			}(i, pending[i].call)
+		}
+		wg.Wait()
+
+		// (#7) Check cancellation after parallel execution completes.
+		if err := ctx.Err(); err != nil {
+			return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, err
+		}
+
+		// Phase 3: apply results to window in original order, update state.
+		for i, p := range pending {
+			call := p.call
+
+			if p.skip {
+				window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: p.obs})
+				fmt.Fprintf(a.cfg.Output, "tool %s: %v\n", p.phase, p.err)
+				a.cfg.Logger.Warn("tool "+p.phase, "tool", call.Name, "error", p.err)
+				if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: p.phase, Tool: call.Name, ID: call.ID, Args: call.Arguments, Error: p.err.Error()}); progressErr != nil {
 					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, progressErr
 				}
-				if repeatedReadCalls[signature] >= 2 {
+				if p.abort != nil {
 					a.printUsage(lastUsage)
-					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, fmt.Errorf("agent stopped after repeated no-progress %s loop", call.Name)
+					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, p.abort
 				}
 				continue
 			}
-			if previous, repeated := failedToolCalls[signature]; repeated {
-				repeatedFailedCalls[signature]++
-				err := fmt.Errorf("repeated failed tool call suppressed; previous output: %s; change strategy or use a different focused tool", strings.TrimSpace(previous.Output))
-				observation := toolObservation(call, tools.Result{Output: err.Error()}, err)
-				window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: observation})
-				fmt.Fprintf(a.cfg.Output, "tool error: %v\n", err)
-				if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: "error", Tool: call.Name, ID: call.ID, Args: call.Arguments, Output: err.Error(), Error: err.Error()}); progressErr != nil {
-					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, progressErr
-				}
-				if repeatedFailedCalls[signature] >= 2 {
-					a.printUsage(lastUsage)
-					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, fmt.Errorf("agent stopped after repeated failed %s loop", call.Name)
-				}
-				continue
-			}
-			if err := a.approveToolCall(call); err != nil {
-				observation := toolObservation(call, tools.Result{Output: "tool call rejected by approval policy"}, err)
-				window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: observation})
-				fmt.Fprintf(a.cfg.Output, "tool rejected: %v\n", err)
-				if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: "rejected", Tool: call.Name, ID: call.ID, Args: call.Arguments, Error: err.Error()}); progressErr != nil {
-					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, progressErr
-				}
-				continue
-			}
-			if err := a.emitToolProgress(ToolProgressEvent{Phase: "running", Tool: call.Name, ID: call.ID, Args: call.Arguments}); err != nil {
-				return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, err
-			}
-			result, err := a.cfg.Tools.RunWithPolicy(ctx, a.cfg.CWD, a.cfg.Sandbox, a.cfg.Mode, a.cfg.ContextFiles, call)
-			observation := toolObservation(call, result, err)
-			window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: observation})
-			if call.Name == "guide" && err == nil {
+
+			outcome := outcomes[i]
+			obs := toolObservation(call, outcome.result, outcome.err)
+			window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: obs})
+
+			if call.Name == "guide" && outcome.err == nil {
 				guideCompleted = true
 			}
-			if call.Name == "update_plan" && err == nil {
-				successfulPlanCalls[signature] = result
+			if call.Name == "update_plan" && outcome.err == nil {
+				successfulPlanCalls[p.sig] = outcome.result
 			}
-			if call.Name == "discover_tools" && err == nil {
+			if call.Name == "discover_tools" && outcome.err == nil {
 				capabilities, capabilityErr := tools.RequestedCapabilities(call.Arguments)
 				if capabilityErr != nil {
 					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, capabilityErr
@@ -372,23 +480,25 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 					runCapabilities[capability] = true
 				}
 			}
-			if err == nil && tools.HasSideEffects(call.Name) {
+			if outcome.err == nil && tools.HasSideEffects(call.Name) {
 				successfulReadCalls = map[string]tools.Result{}
 				repeatedReadCalls = map[string]int{}
-			} else if err == nil && tools.SuppressRepeatedSuccessfulCall(call.Name) {
-				successfulReadCalls[signature] = result
+			} else if outcome.err == nil && tools.SuppressRepeatedSuccessfulCall(call.Name) {
+				successfulReadCalls[p.sig] = outcome.result
 			}
-			if err != nil {
-				failedToolCalls[signature] = result
-				fmt.Fprintf(a.cfg.Output, "tool error: %v\n", err)
+			if outcome.err != nil {
+				failedToolCalls[p.sig] = outcome.result
+				fmt.Fprintf(a.cfg.Output, "tool error: %v\n", outcome.err)
+				a.cfg.Logger.Error("tool error", "tool", call.Name, "error", outcome.err)
 			}
+
 			phase := "done"
 			errText := ""
-			if err != nil {
+			if outcome.err != nil {
 				phase = "error"
-				errText = err.Error()
+				errText = outcome.err.Error()
 			}
-			if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: phase, Tool: call.Name, ID: call.ID, Args: call.Arguments, Output: result.Output, Error: errText}); progressErr != nil {
+			if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: phase, Tool: call.Name, ID: call.ID, Args: call.Arguments, Output: outcome.result.Output, Error: errText}); progressErr != nil {
 				return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, progressErr
 			}
 		}
@@ -404,14 +514,14 @@ func (a *Agent) emitToolProgress(event ToolProgressEvent) error {
 }
 
 func (a *Agent) contextDebug(specs []llm.ToolSpec) ContextDebug {
-	tools := make([]string, 0, len(specs))
+	toolNames := make([]string, 0, len(specs))
 	for _, spec := range specs {
-		tools = append(tools, spec.Name)
+		toolNames = append(toolNames, spec.Name)
 	}
 	debug := ContextDebug{
 		Mode:         a.cfg.Mode,
 		ContextFiles: append([]string(nil), a.cfg.ContextFiles...),
-		VisibleTools: tools,
+		VisibleTools: toolNames,
 	}
 	switch strings.ToLower(strings.TrimSpace(a.cfg.Mode)) {
 	case "inspect":
@@ -428,7 +538,55 @@ func (a *Agent) contextDebug(specs []llm.ToolSpec) ContextDebug {
 	return debug
 }
 
+// complete wraps tryComplete with exponential-backoff retry for transient errors. (#2)
 func (a *Agent) complete(ctx context.Context, req llm.Request) (llm.Response, bool, error) {
+	var lastResp llm.Response
+	var lastStreamed bool
+	var lastErr error
+
+	for attempt := 0; attempt < maxLLMRetries; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(1<<uint(attempt-1)) * time.Second // 1s, 2s, 4s
+			a.cfg.Logger.Warn("retrying LLM call", "attempt", attempt+1, "delay", delay.String(), "error", lastErr)
+			select {
+			case <-ctx.Done():
+				return llm.Response{}, false, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+		resp, streamed, err := a.tryComplete(ctx, req)
+		if err == nil {
+			return resp, streamed, nil
+		}
+		if !isRetryableLLMError(err) {
+			return resp, streamed, err
+		}
+		lastResp = resp
+		lastStreamed = streamed
+		lastErr = err
+	}
+	return lastResp, lastStreamed, fmt.Errorf("LLM call failed after %d retries: %w", maxLLMRetries, lastErr)
+}
+
+// isRetryableLLMError returns true for transient errors that warrant a retry.
+func isRetryableLLMError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "429") ||
+		strings.Contains(text, "502") ||
+		strings.Contains(text, "503") ||
+		strings.Contains(text, "504") ||
+		strings.Contains(text, "rate limit") ||
+		strings.Contains(text, "too many requests") ||
+		strings.Contains(text, "connection reset") ||
+		strings.Contains(text, "broken pipe") ||
+		strings.Contains(text, "eof")
+}
+
+// tryComplete performs a single LLM call, with streaming if configured.
+func (a *Agent) tryComplete(ctx context.Context, req llm.Request) (llm.Response, bool, error) {
 	streamer, ok := a.cfg.Provider.(llm.StreamProvider)
 	if !a.cfg.Stream || !ok {
 		resp, err := a.cfg.Provider.Complete(ctx, req)
@@ -526,6 +684,7 @@ func (a *Agent) approveToolCall(call llm.ToolCall) error {
 		risk = string(assessment.Risk)
 		reason = assessment.Reason
 		fmt.Fprintf(a.cfg.Output, "policy: %s (%s)\n", assessment.Risk, assessment.Reason)
+		a.cfg.Logger.Info("policy assessment", "tool", call.Name, "risk", risk, "reason", reason)
 		if strings.ToLower(strings.TrimSpace(a.cfg.ApprovalMode)) == "auto" && assessment.BlockInAuto {
 			return fmt.Errorf("blocked by auto policy: %s", assessment.Reason)
 		}
@@ -580,12 +739,25 @@ func (a *Agent) printUsage(usage llm.Usage) {
 		usage.ReasoningTokens,
 		usage.TotalTokens,
 	)
+	a.cfg.Logger.Info("usage",
+		"input", usage.InputTokens,
+		"cached", usage.CachedTokens,
+		"output", usage.OutputTokens,
+		"reasoning", usage.ReasoningTokens,
+		"total", usage.TotalTokens,
+	)
 }
 
+// toolObservation builds the JSON observation message for a tool call result.
+// Long outputs are truncated to maxToolOutputBytes to protect the context window. (#3)
 func toolObservation(call llm.ToolCall, result tools.Result, runErr error) string {
+	output := result.Output
+	if len(output) > maxToolOutputBytes {
+		output = output[:maxToolOutputBytes] + fmt.Sprintf("\n... [output truncated: %d bytes omitted]", len(output)-maxToolOutputBytes)
+	}
 	payload := map[string]any{
 		"tool":   call.Name,
-		"output": result.Output,
+		"output": output,
 	}
 	if runErr != nil {
 		payload["error"] = runErr.Error()
@@ -595,7 +767,7 @@ func toolObservation(call llm.ToolCall, result tools.Result, runErr error) strin
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return result.Output
+		return output
 	}
 	return string(data)
 }
@@ -643,6 +815,7 @@ General principles:
 - If the needed task tool is not visible, call discover_tools once with the smallest useful capability groups, then use the newly unlocked tools.
 - After any tool failure, read the observation, change strategy once, and do not repeat the same failed call with the same arguments.
 - Answer clearly, concisely, and with actionable detail.
+- Use sub_agent to delegate focused subtasks that can run independently, or to parallelize work across multiple files.
 
 When working with code and files:
 - If the user asks to create a new known file, call create_file directly. Do not run project_map/search/bash first just to learn how to create a file.
