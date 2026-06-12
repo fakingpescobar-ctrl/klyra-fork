@@ -419,3 +419,106 @@ klyra sessions prune --days 14
 | `pkg/context/window.go` | `slog.Debug` в `CalibrateFrom()` |
 | `pkg/agent/subagent.go` | Дочерний агент изолирован (сброс IO/handlers) |
 | `cmd/klyra/root.go` | `buildBaseAgentConfig`, SIGINT, sub_agent, `--json`, `/cart remove/clear`, `sessions delete/prune` |
+
+---
+
+## Улучшения итерации 3
+
+Третья волна: стоимость запросов, исключение файлов, параллельный запуск, проверка API.
+
+### 17. Оценка стоимости (`pkg/llm/cost.go`)
+
+После каждого запуска выводится примерная стоимость в USD:
+
+```
+usage: input=1234 cached=0 output=456 reasoning=0 total=1690 cost=~$0.0218
+```
+
+Таблица цен покрывает OpenAI (GPT-4o, o1, o3), Anthropic (Claude 3/4 Haiku/Sonnet/Opus) и Google Gemini (1.5/2.0/2.5). Кешированные токены считаются по 10% от базовой цены.
+
+### 18. Исключение файлов через `.klyra/ignore.md`
+
+Создайте файл `.klyra/ignore.md` в корне проекта:
+
+```
+# игнорировать большие сгенерированные файлы
+dist/
+*.generated.go
+fixtures/large_data/
+```
+
+Инструменты `list_files`, `search` и `project_map` будут пропускать эти пути. Синтаксис: glob-паттерны, строки-комментарии начинаются с `#` или `//`.
+
+### 19. `run --timeout` — дедлайн на выполнение
+
+```sh
+klyra run --timeout 5m "задача которая может зависнуть"
+klyra run --timeout 30s "быстрая проверка"
+```
+
+Агент принудительно завершается по истечении указанного времени. Поддерживается стандартный Go-формат: `5m`, `30s`, `1h30m`.
+
+### 20. `run --parallel` — конкурентные задачи
+
+```sh
+klyra run --parallel "проверь auth/" "проверь api/" "проверь db/"
+```
+
+Каждый позиционный аргумент запускается как отдельный дочерний агент в параллельных горутинах. Результаты собираются в порядке аргументов после завершения всех. Полезно для одновременного анализа нескольких частей кодовой базы.
+
+### 21. Стриминг в `chat` по умолчанию
+
+Команда `chat` теперь включает стриминг токенов автоматически. Отключить: `--no-stream`.
+
+### 22. `/undo` в TUI
+
+```text
+/undo
+```
+
+Восстанавливает последний сохранённый чекпоинт воркспейса (через инструмент `workspace_restore`). Удобно для отката последних изменений файлов прямо из чата.
+
+### 23. `sessions rename` и `/sessions rename`
+
+CLI:
+```sh
+klyra sessions rename old-name new-name
+```
+
+TUI:
+```text
+/sessions rename old-name new-name
+```
+
+Переименовывает сессию без потери истории. Возвращает ошибку, если целевое имя уже занято.
+
+### 24. `doctor --ping` — проверка доступности API
+
+```sh
+klyra doctor --ping
+```
+
+Отправляет минимальный запрос к настроенному провайдеру и выводит задержку:
+
+```
+ping: OK (342ms)
+```
+
+Или сообщение об ошибке при недоступности:
+
+```
+ping: FAIL (connection refused)
+```
+
+### Изменённые файлы (итерация 3)
+
+| Файл | Что изменилось |
+|------|----------------|
+| `pkg/llm/cost.go` | Новый файл: `EstimateCost()` + таблица цен |
+| `pkg/agent/agent.go` | `printUsage` показывает стоимость |
+| `pkg/tools/ignore.go` | Новый файл: `loadIgnorePatterns` + `matchesIgnorePattern` |
+| `pkg/tools/files.go` | Применяет паттерны ignore в `list_files` |
+| `pkg/tools/search.go` | Применяет паттерны ignore в `search` |
+| `pkg/tools/project.go` | Применяет паттерны ignore в `project_map` |
+| `pkg/session/store.go` | Новый метод `Rename()` |
+| `cmd/klyra/root.go` | `--timeout`, `--parallel`, стриминг, `/undo`, `sessions rename`, `doctor --ping` |
