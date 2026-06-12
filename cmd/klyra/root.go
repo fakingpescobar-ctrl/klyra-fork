@@ -97,6 +97,10 @@ func newRootCommand() *cobra.Command {
 		Use:     "klyra",
 		Short:   "Agentic coding CLI",
 		Version: version.Version,
+		// Runtime errors from RunE (e.g. a provider that won't connect) should not
+		// dump the full flag usage; the error message alone is clearer. Flag/arg
+		// mistakes still surface their own errors, and --help stays available.
+		SilenceUsage: true,
 		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
 			setTerminalTitle(cmd.ErrOrStderr(), terminalTitleForProject(opts.cwd))
 		},
