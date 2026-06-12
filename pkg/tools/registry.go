@@ -176,6 +176,11 @@ func (r *Registry) SpecsForCapabilities(task, mode string, contextFiles []string
 
 	specs := make([]llm.ToolSpec, 0, len(names))
 	for name := range r.tools {
+		// sub_agent is always visible when registered; it manages its own recursion guard.
+		if name == "sub_agent" {
+			names[name] = true
+			continue
+		}
 		if isMCPTool(name) {
 			if mode == "plan" || !capabilities[CapabilityExternal] {
 				continue
