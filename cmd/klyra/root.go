@@ -328,7 +328,16 @@ func newRootCommand() *cobra.Command {
 			collectMTimes := func() map[string]time.Time {
 				mtimes := map[string]time.Time{}
 				filepath.WalkDir(opts.cwd, func(path string, d os.DirEntry, walkErr error) error { //nolint:errcheck
-					if walkErr != nil || d.IsDir() {
+					if walkErr != nil {
+						return nil
+					}
+					if d.IsDir() {
+						// Skip VCS and klyra's own state dirs: the agent writes
+						// session state to .agentcli every run, which would
+						// otherwise retrigger the watch endlessly.
+						if path != opts.cwd && (d.Name() == ".git" || d.Name() == ".agentcli") {
+							return filepath.SkipDir
+						}
 						return nil
 					}
 					rel, _ := filepath.Rel(opts.cwd, path)
@@ -375,11 +384,14 @@ func newRootCommand() *cobra.Command {
 					}
 				}
 				if changed {
-					prev = curr
 					fmt.Fprintf(cmd.OutOrStdout(), "[watch] re-running...\n")
 					if err := runOnce(); err != nil {
 						fmt.Fprintf(cmd.OutOrStdout(), "[watch] error: %v\n", err)
 					}
+					// Re-baseline AFTER the run so files the agent itself wrote
+					// are absorbed into the baseline rather than retriggering an
+					// endless re-run loop. Only changes made after this point fire.
+					prev = collectMTimes()
 				}
 			}
 		},
