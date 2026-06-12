@@ -72,12 +72,19 @@ func (t subAgentTool) Run(ctx context.Context, inv tools.Invocation) (tools.Resu
 // DefaultSubAgentFactory returns a SubAgentFactory that spawns real child agents
 // sharing the parent's provider and tools. Child agents are capped at 10 steps
 // and cannot spawn further sub-agents (SubAgentFactory is nil in child config).
+// Child output is discarded — the result is returned as the tool output string.
 func DefaultSubAgentFactory(parentCfg Config) SubAgentFactory {
 	return func(ctx context.Context, task, mode string, contextFiles []string) (string, error) {
 		childCfg := parentCfg
 		childCfg.Mode = mode
 		childCfg.ContextFiles = contextFiles
-		childCfg.SubAgentFactory = nil // prevent infinite recursion
+		childCfg.SubAgentFactory = nil  // prevent infinite recursion
+		childCfg.Output = nil           // result returns as string, not written to parent output
+		childCfg.Input = nil            // child needs no interactive input
+		childCfg.StreamHandler = nil    // no streaming to parent
+		childCfg.ReasoningHandler = nil // no reasoning forwarding
+		childCfg.ToolProgress = nil     // no tool progress forwarding
+		childCfg.Approver = nil         // child auto-approves (parent already decided to delegate)
 		if childCfg.MaxSteps > 10 {
 			childCfg.MaxSteps = 10
 		}

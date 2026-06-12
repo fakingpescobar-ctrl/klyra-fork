@@ -1,6 +1,10 @@
 package contextmgr
 
-import "klyra/pkg/llm"
+import (
+	"log/slog"
+
+	"klyra/pkg/llm"
+)
 
 type Window struct {
 	maxMessages int
@@ -45,6 +49,7 @@ func (w *Window) CalibrateFrom(actualTokens int) {
 	} else {
 		w.tokenScale = 0.7*w.tokenScale + 0.3*scale
 	}
+	slog.Debug("token calibration updated", "actual", actualTokens, "estimated", estimated, "scale", w.tokenScale)
 }
 
 // adjustedMaxTokens returns maxTokens corrected by the calibration factor.

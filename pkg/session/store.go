@@ -104,6 +104,40 @@ func (s *Store) List() ([]Session, error) {
 	return sessions, nil
 }
 
+// Delete removes a session by ID.
+func (s *Store) Delete(id string) error {
+	id = cleanID(id)
+	if id == "" {
+		return fmt.Errorf("session id cannot be empty")
+	}
+	path := filepath.Join(s.dir, id+".json")
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("session %q not found", id)
+		}
+		return err
+	}
+	return nil
+}
+
+// Prune deletes sessions not updated within olderThan duration. Returns count deleted.
+func (s *Store) Prune(olderThan time.Duration) (int, error) {
+	sessions, err := s.List()
+	if err != nil {
+		return 0, err
+	}
+	cutoff := time.Now().UTC().Add(-olderThan)
+	count := 0
+	for _, sess := range sessions {
+		if sess.UpdatedAt.Before(cutoff) {
+			if delErr := s.Delete(sess.ID); delErr == nil {
+				count++
+			}
+		}
+	}
+	return count, nil
+}
+
 var unsafeID = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 
 func cleanID(id string) string {

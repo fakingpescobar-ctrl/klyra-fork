@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"time"
 
 	"klyra/pkg/llm"
@@ -41,7 +42,12 @@ func (BashRunner) Run(ctx context.Context, inv Invocation) (Result, error) {
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, "bash", "-lc", command)
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(runCtx, "cmd", "/c", command)
+	} else {
+		cmd = exec.CommandContext(runCtx, "bash", "-lc", command)
+	}
 	cmd.Dir = inv.CWD
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

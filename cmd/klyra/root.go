@@ -10,12 +10,14 @@ import (
 	"mime"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"klyra/internal/version"
@@ -145,6 +147,7 @@ func newRootCommand() *cobra.Command {
 	root.PersistentFlags().BoolVar(&opts.negativeContext, "negative-context", false, "enable negative context deny-list cards")
 	root.PersistentFlags().BoolVar(&opts.noNegativeContext, "no-negative-context", false, "disable negative context deny-list cards")
 
+	var jsonOutput bool
 	runCmd := &cobra.Command{
 		Use:   "run [task]",
 		Short: "Run an agent task",
@@ -158,52 +161,26 @@ func newRootCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			toolRegistry, err := buildToolRegistry(context.Background(), runtimeCfg)
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			toolRegistry, err := buildToolRegistry(ctx, runtimeCfg)
 			if err != nil {
 				return err
 			}
-			runner, err := agent.New(agent.Config{
-				CWD:                    opts.cwd,
-				Model:                  model,
-				ModelRoutes:            runtimeCfg.ModelRoutes,
-				MaxSteps:               runtimeCfg.MaxSteps,
-				MaxMessages:            runtimeCfg.MaxMessages,
-				MaxContext:             runtimeCfg.MaxContext,
-				MaxInstructions:        runtimeCfg.MaxInstructions,
-				MaxOutput:              runtimeCfg.MaxOutput,
-				Reasoning:              runtimeCfg.Reasoning,
-				Store:                  runtimeCfg.StoreResponses,
-				Stream:                 runtimeCfg.Stream,
-				ApprovalMode:           runtimeCfg.ApprovalMode,
-				Sandbox:                runtimeCfg.Sandbox,
-				Mode:                   runtimeCfg.Mode,
-				ContextFiles:           runtimeCfg.ContextFiles,
-				ContextCockpitEnabled:  runtimeCfg.ContextCockpit,
-				ContextCockpitInject:   runtimeCfg.ContextCockpitInject,
-				ContextCockpitTokens:   runtimeCfg.ContextCockpitTokens,
-				ContextCockpitMaxFiles: runtimeCfg.ContextCockpitMaxFiles,
-				ContextCockpitMaxCards: runtimeCfg.ContextCockpitMaxCards,
-				ContextRetrieval:       runtimeCfg.ContextRetrieval,
-				ContextRetrievalTokens: runtimeCfg.ContextRetrievalTokens,
-				ContextRetrievalChunks: runtimeCfg.ContextRetrievalChunks,
-				ContextEmbeddings:      runtimeCfg.ContextEmbeddings,
-				ContextReranker:        runtimeCfg.ContextReranker,
-				ContextCockpitDiff:     runtimeCfg.ContextCockpitDiff,
-				ContextRecipes:         runtimeCfg.ContextRecipes,
-				NegativeContext:        runtimeCfg.NegativeContext,
-				Skills:                 runtimeCfg.Skills,
-				Provider:               provider,
-				Tools:                  toolRegistry,
-				Input:                  os.Stdin,
-				Output:                 cmd.OutOrStdout(),
-			})
+			baseCfg := buildBaseAgentConfig(runtimeCfg, opts.cwd, model, provider, toolRegistry)
+			baseCfg.Input = os.Stdin
+			baseCfg.Output = cmd.OutOrStdout()
+			runner, err := agent.New(baseCfg)
 			if err != nil {
 				return err
 			}
 			task := strings.Join(args, " ")
 			if strings.TrimSpace(opts.sessionID) == "" {
-				_, err = runner.Run(context.Background(), task)
-				return err
+				result, runErr := runner.RunConversation(ctx, nil, task)
+				if jsonOutput {
+					return printJSONResult(cmd.OutOrStdout(), result)
+				}
+				return runErr
 			}
 			store, err := session.NewStore(opts.cwd)
 			if err != nil {
@@ -213,16 +190,20 @@ func newRootCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result, err := runner.RunConversation(context.Background(), saved.Messages, task)
+			result, err := runner.RunConversation(ctx, saved.Messages, task)
 			saved.Messages = result.Messages
 			if saveErr := store.Save(saved); saveErr != nil {
 				return saveErr
 			}
 			printContextDebug(cmd.OutOrStdout(), result.ContextDebug)
 			fmt.Fprintf(cmd.OutOrStdout(), "session: %s\n", saved.ID)
+			if jsonOutput {
+				return printJSONResult(cmd.OutOrStdout(), result)
+			}
 			return err
 		},
 	}
+	runCmd.Flags().BoolVar(&jsonOutput, "json", false, "output result as JSON {result, usage}")
 
 	root.AddCommand(runCmd)
 	root.AddCommand(newChatCommand(&opts))
@@ -405,7 +386,10 @@ func newTUICommand(opts *options) *cobra.Command {
 				{Name: "/approval", Description: "Set approval mode: auto/ask/always/never"},
 				{Name: "/sandbox", Description: "Set sandbox: read-only/workspace-write/danger-full-access"},
 				{Name: "/mode", Description: "Set mode: plan/inspect/edit/repair/refactor"},
-				{Name: "/cart", Description: "Show or add context cart files"},
+				{Name: "/cart", Description: "Show, add, remove, or clear context cart files"},
+				{Name: "/cart add", Description: "Add files to context cart: /cart add <file...>"},
+				{Name: "/cart remove", Description: "Remove files from context cart: /cart remove <file...>"},
+				{Name: "/cart clear", Description: "Clear all files from context cart"},
 				{Name: "/context", Description: "Show context cockpit fact cards"},
 				{Name: "/attach", Description: "Attach an image to the next model request"},
 				{Name: "/attachments", Description: "Show pending image attachments"},
@@ -414,6 +398,8 @@ func newTUICommand(opts *options) *cobra.Command {
 				{Name: "/tools", Description: "Toggle agent tools on/off"},
 				{Name: "/instructions", Description: "Show project instruction files"},
 				{Name: "/sessions", Description: "List saved workspace sessions"},
+				{Name: "/sessions delete", Description: "Delete a session by id"},
+				{Name: "/sessions prune", Description: "Delete sessions older than N days: /sessions prune --days=30"},
 				{Name: "/checkpoint", Description: "Open checkpoint actions"},
 				{Name: "/checkpoint list", Description: "List workspace checkpoints"},
 				{Name: "/checkpoint create", Description: "Create a workspace checkpoint"},
@@ -560,6 +546,20 @@ func newTUICommand(opts *options) *cobra.Command {
 					case "/cart":
 						if len(args) >= 3 && args[1] == "add" {
 							runtimeCfg.ContextFiles = append(runtimeCfg.ContextFiles, args[2:]...)
+						} else if len(args) >= 3 && args[1] == "remove" {
+							toRemove := map[string]bool{}
+							for _, f := range args[2:] {
+								toRemove[f] = true
+							}
+							filtered := runtimeCfg.ContextFiles[:0]
+							for _, f := range runtimeCfg.ContextFiles {
+								if !toRemove[f] {
+									filtered = append(filtered, f)
+								}
+							}
+							runtimeCfg.ContextFiles = filtered
+						} else if len(args) >= 2 && args[1] == "clear" {
+							runtimeCfg.ContextFiles = nil
 						}
 						return formatContextCart(runtimeCfg.ContextFiles), nil
 					case "/context":
@@ -590,7 +590,36 @@ func newTUICommand(opts *options) *cobra.Command {
 							}
 						}
 						fallthrough
-					case "/doctor", "/tools", "/instructions", "/skills", "/sessions", "/checkpoint", "/policy", "/config":
+					case "/sessions":
+						if len(args) >= 3 && args[1] == "delete" {
+							sessionStore, storeErr := session.NewStore(opts.cwd)
+							if storeErr != nil {
+								return "", storeErr
+							}
+							if delErr := sessionStore.Delete(args[2]); delErr != nil {
+								return "", delErr
+							}
+							return fmt.Sprintf("session deleted: `%s`", args[2]), nil
+						}
+						if len(args) >= 2 && args[1] == "prune" {
+							days := 30
+							for _, a := range args[2:] {
+								if n, parseErr := strconv.Atoi(strings.TrimPrefix(a, "--days=")); parseErr == nil {
+									days = n
+								}
+							}
+							sessionStore, storeErr := session.NewStore(opts.cwd)
+							if storeErr != nil {
+								return "", storeErr
+							}
+							count, pruneErr := sessionStore.Prune(time.Duration(days) * 24 * time.Hour)
+							if pruneErr != nil {
+								return "", pruneErr
+							}
+							return fmt.Sprintf("pruned %d session(s) older than %d days", count, days), nil
+						}
+						fallthrough
+					case "/doctor", "/tools", "/instructions", "/skills", "/checkpoint", "/policy", "/config":
 						cliCmdName := strings.TrimPrefix(cmdName, "/")
 						var out strings.Builder
 						subCmd := newRootCommand()
@@ -612,83 +641,52 @@ func newTUICommand(opts *options) *cobra.Command {
 				var output strings.Builder
 				sawStream := false
 				streamDispatcher := newTUIStreamDispatcher(func() *tea.Program { return p })
-				runnerWithOutput, err := agent.New(agent.Config{
-					CWD:                    opts.cwd,
-					Model:                  model,
-					ModelRoutes:            runtimeCfg.ModelRoutes,
-					MaxSteps:               runtimeCfg.MaxSteps,
-					MaxMessages:            runtimeCfg.MaxMessages,
-					MaxContext:             runtimeCfg.MaxContext,
-					MaxInstructions:        runtimeCfg.MaxInstructions,
-					MaxOutput:              runtimeCfg.MaxOutput,
-					Reasoning:              runtimeCfg.Reasoning,
-					Store:                  runtimeCfg.StoreResponses,
-					Stream:                 runtimeCfg.Stream,
-					ApprovalMode:           runtimeCfg.ApprovalMode,
-					Sandbox:                runtimeCfg.Sandbox,
-					Mode:                   runtimeCfg.Mode,
-					ContextFiles:           runtimeCfg.ContextFiles,
-					ContextCockpitEnabled:  runtimeCfg.ContextCockpit,
-					ContextCockpitInject:   runtimeCfg.ContextCockpitInject,
-					ContextCockpitTokens:   runtimeCfg.ContextCockpitTokens,
-					ContextCockpitMaxFiles: runtimeCfg.ContextCockpitMaxFiles,
-					ContextCockpitMaxCards: runtimeCfg.ContextCockpitMaxCards,
-					ContextRetrieval:       runtimeCfg.ContextRetrieval,
-					ContextRetrievalTokens: runtimeCfg.ContextRetrievalTokens,
-					ContextRetrievalChunks: runtimeCfg.ContextRetrievalChunks,
-					ContextEmbeddings:      runtimeCfg.ContextEmbeddings,
-					ContextReranker:        runtimeCfg.ContextReranker,
-					ContextCockpitDiff:     runtimeCfg.ContextCockpitDiff,
-					ContextRecipes:         runtimeCfg.ContextRecipes,
-					NegativeContext:        runtimeCfg.NegativeContext,
-					Skills:                 runtimeCfg.Skills,
-					Provider:               provider,
-					Tools:                  toolRegistry,
-					Input:                  os.Stdin,
-					Output:                 &output,
-					Approver:               newTUIApprover(&p),
-					StreamHandler: func(event llm.StreamEvent) error {
-						if p == nil {
-							return nil
-						}
-						if event.ToolName != "" || event.ToolArgumentsDelta != "" {
-							sawStream = true
-							streamDispatcher.SendToolStream(tui.ToolStreamMsg{
-								Index:     event.ToolCallIndex,
-								ID:        event.ToolCallID,
-								Name:      event.ToolName,
-								Arguments: event.ToolArgumentsDelta,
-							})
-						}
-						if event.Delta != "" {
-							sawStream = true
-							streamDispatcher.SendText(event.Delta)
-						}
+				tuiCfg := buildBaseAgentConfig(runtimeCfg, opts.cwd, model, provider, toolRegistry)
+				tuiCfg.Input = os.Stdin
+				tuiCfg.Output = &output
+				tuiCfg.Approver = newTUIApprover(&p)
+				tuiCfg.StreamHandler = func(event llm.StreamEvent) error {
+					if p == nil {
 						return nil
-					},
-					ReasoningHandler: func(text string) error {
-						if text == "" || p == nil {
-							return nil
-						}
-						streamDispatcher.SendReasoning(text)
-						return nil
-					},
-					ToolProgress: func(event agent.ToolProgressEvent) error {
-						if p == nil {
-							return nil
-						}
+					}
+					if event.ToolName != "" || event.ToolArgumentsDelta != "" {
 						sawStream = true
-						streamDispatcher.SendToolProgress(tui.ToolProgressMsg{
-							Phase:  event.Phase,
-							Tool:   event.Tool,
-							ID:     event.ID,
-							Args:   event.Args,
-							Output: event.Output,
-							Error:  event.Error,
+						streamDispatcher.SendToolStream(tui.ToolStreamMsg{
+							Index:     event.ToolCallIndex,
+							ID:        event.ToolCallID,
+							Name:      event.ToolName,
+							Arguments: event.ToolArgumentsDelta,
 						})
+					}
+					if event.Delta != "" {
+						sawStream = true
+						streamDispatcher.SendText(event.Delta)
+					}
+					return nil
+				}
+				tuiCfg.ReasoningHandler = func(text string) error {
+					if text == "" || p == nil {
 						return nil
-					},
-				})
+					}
+					streamDispatcher.SendReasoning(text)
+					return nil
+				}
+				tuiCfg.ToolProgress = func(event agent.ToolProgressEvent) error {
+					if p == nil {
+						return nil
+					}
+					sawStream = true
+					streamDispatcher.SendToolProgress(tui.ToolProgressMsg{
+						Phase:  event.Phase,
+						Tool:   event.Tool,
+						ID:     event.ID,
+						Args:   event.Args,
+						Output: event.Output,
+						Error:  event.Error,
+					})
+					return nil
+				}
+				runnerWithOutput, err := agent.New(tuiCfg)
 				if err != nil {
 					streamDispatcher.Close()
 					return "", err
@@ -1619,44 +1617,16 @@ func newChatCommand(opts *options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			runner, err := agent.New(agent.Config{
-				CWD:                    opts.cwd,
-				Model:                  model,
-				ModelRoutes:            runtimeCfg.ModelRoutes,
-				MaxSteps:               runtimeCfg.MaxSteps,
-				MaxMessages:            runtimeCfg.MaxMessages,
-				MaxContext:             runtimeCfg.MaxContext,
-				MaxInstructions:        runtimeCfg.MaxInstructions,
-				MaxOutput:              runtimeCfg.MaxOutput,
-				Reasoning:              runtimeCfg.Reasoning,
-				Store:                  runtimeCfg.StoreResponses,
-				Stream:                 runtimeCfg.Stream,
-				ApprovalMode:           runtimeCfg.ApprovalMode,
-				Sandbox:                runtimeCfg.Sandbox,
-				Mode:                   runtimeCfg.Mode,
-				ContextFiles:           runtimeCfg.ContextFiles,
-				ContextCockpitEnabled:  runtimeCfg.ContextCockpit,
-				ContextCockpitInject:   runtimeCfg.ContextCockpitInject,
-				ContextCockpitTokens:   runtimeCfg.ContextCockpitTokens,
-				ContextCockpitMaxFiles: runtimeCfg.ContextCockpitMaxFiles,
-				ContextCockpitMaxCards: runtimeCfg.ContextCockpitMaxCards,
-				ContextRetrieval:       runtimeCfg.ContextRetrieval,
-				ContextRetrievalTokens: runtimeCfg.ContextRetrievalTokens,
-				ContextRetrievalChunks: runtimeCfg.ContextRetrievalChunks,
-				ContextEmbeddings:      runtimeCfg.ContextEmbeddings,
-				ContextReranker:        runtimeCfg.ContextReranker,
-				ContextCockpitDiff:     runtimeCfg.ContextCockpitDiff,
-				ContextRecipes:         runtimeCfg.ContextRecipes,
-				NegativeContext:        runtimeCfg.NegativeContext,
-				Skills:                 runtimeCfg.Skills,
-				Provider:               provider,
-				Tools:                  toolRegistry,
-				Input:                  os.Stdin,
-				Output:                 cmd.OutOrStdout(),
-			})
+			baseCfg := buildBaseAgentConfig(runtimeCfg, opts.cwd, model, provider, toolRegistry)
+			baseCfg.Input = os.Stdin
+			baseCfg.Output = cmd.OutOrStdout()
+			runner, err := agent.New(baseCfg)
 			if err != nil {
 				return err
 			}
+
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
 
 			fmt.Fprintf(cmd.OutOrStdout(), "session: %s\n", saved.ID)
 			fmt.Fprintln(cmd.OutOrStdout(), "type /exit to quit, /save to persist now, /compact to compress history")
@@ -1698,14 +1668,14 @@ func newChatCommand(opts *options) *cobra.Command {
 						stats.OriginalMessages, stats.PackedMessages, stats.OriginalTokens, stats.PackedTokens)
 					continue
 				}
-				result, err := runner.RunConversation(context.Background(), saved.Messages, line)
+				result, runErr := runner.RunConversation(ctx, saved.Messages, line)
 				saved.Messages = result.Messages
 				if saveErr := store.Save(saved); saveErr != nil {
 					return saveErr
 				}
 				printContextDebug(cmd.OutOrStdout(), result.ContextDebug)
-				if err != nil {
-					fmt.Fprintf(cmd.OutOrStdout(), "error: %v\n", err)
+				if runErr != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "error: %v\n", runErr)
 				}
 			}
 			if err := scanner.Err(); err != nil {
@@ -1982,6 +1952,41 @@ func newSessionsCommand(opts *options) *cobra.Command {
 			return nil
 		},
 	})
+	sessionsCmd.AddCommand(&cobra.Command{
+		Use:   "delete [id]",
+		Short: "Delete a saved session by id",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := session.NewStore(opts.cwd)
+			if err != nil {
+				return err
+			}
+			if err := store.Delete(args[0]); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "deleted session: %s\n", args[0])
+			return nil
+		},
+	})
+	var pruneDays int
+	pruneCmd := &cobra.Command{
+		Use:   "prune",
+		Short: "Delete sessions not updated within --days days (default 30)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			store, err := session.NewStore(opts.cwd)
+			if err != nil {
+				return err
+			}
+			count, err := store.Prune(time.Duration(pruneDays) * 24 * time.Hour)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "pruned %d session(s) older than %d days\n", count, pruneDays)
+			return nil
+		},
+	}
+	pruneCmd.Flags().IntVar(&pruneDays, "days", 30, "delete sessions not updated within this many days")
+	sessionsCmd.AddCommand(pruneCmd)
 	return sessionsCmd
 }
 
@@ -2137,6 +2142,46 @@ func printEnvStatus(out interface{ Write([]byte) (int, error) }, name string) {
 		return
 	}
 	fmt.Fprintf(out, "%s: set\n", name)
+}
+
+// buildBaseAgentConfig constructs the common agent.Config from a runtime config.
+// Callers must still set Output, Input, and any callback fields (Approver, StreamHandler, etc.).
+func buildBaseAgentConfig(runtimeCfg appconfig.Config, cwd, model string, provider llm.Provider, toolRegistry *tools.Registry) agent.Config {
+	baseCfg := agent.Config{
+		CWD:                    cwd,
+		Model:                  model,
+		ModelRoutes:            runtimeCfg.ModelRoutes,
+		MaxSteps:               runtimeCfg.MaxSteps,
+		MaxMessages:            runtimeCfg.MaxMessages,
+		MaxContext:             runtimeCfg.MaxContext,
+		MaxInstructions:        runtimeCfg.MaxInstructions,
+		MaxOutput:              runtimeCfg.MaxOutput,
+		Reasoning:              runtimeCfg.Reasoning,
+		Store:                  runtimeCfg.StoreResponses,
+		Stream:                 runtimeCfg.Stream,
+		ApprovalMode:           runtimeCfg.ApprovalMode,
+		Sandbox:                runtimeCfg.Sandbox,
+		Mode:                   runtimeCfg.Mode,
+		ContextFiles:           runtimeCfg.ContextFiles,
+		ContextCockpitEnabled:  runtimeCfg.ContextCockpit,
+		ContextCockpitInject:   runtimeCfg.ContextCockpitInject,
+		ContextCockpitTokens:   runtimeCfg.ContextCockpitTokens,
+		ContextCockpitMaxFiles: runtimeCfg.ContextCockpitMaxFiles,
+		ContextCockpitMaxCards: runtimeCfg.ContextCockpitMaxCards,
+		ContextRetrieval:       runtimeCfg.ContextRetrieval,
+		ContextRetrievalTokens: runtimeCfg.ContextRetrievalTokens,
+		ContextRetrievalChunks: runtimeCfg.ContextRetrievalChunks,
+		ContextEmbeddings:      runtimeCfg.ContextEmbeddings,
+		ContextReranker:        runtimeCfg.ContextReranker,
+		ContextCockpitDiff:     runtimeCfg.ContextCockpitDiff,
+		ContextRecipes:         runtimeCfg.ContextRecipes,
+		NegativeContext:        runtimeCfg.NegativeContext,
+		Skills:                 runtimeCfg.Skills,
+		Provider:               provider,
+		Tools:                  toolRegistry,
+	}
+	baseCfg.SubAgentFactory = agent.DefaultSubAgentFactory(baseCfg)
+	return baseCfg
 }
 
 func buildProvider(name, model string) (llm.Provider, string, error) {
@@ -2330,6 +2375,26 @@ func setTerminalTitle(out io.Writer, title string) {
 	}
 	title = strings.NewReplacer("\x1b", "", "\x07", "", "\n", " ", "\r", " ").Replace(title)
 	fmt.Fprintf(file, "\x1b]0;%s\x07", title)
+}
+
+// printJSONResult writes a JSON object with the agent result and usage to out.
+func printJSONResult(out io.Writer, result agent.RunResult) error {
+	payload := map[string]any{
+		"result": result.Final,
+		"usage": map[string]int{
+			"input":     result.Usage.InputTokens,
+			"cached":    result.Usage.CachedTokens,
+			"output":    result.Usage.OutputTokens,
+			"reasoning": result.Usage.ReasoningTokens,
+			"total":     result.Usage.TotalTokens,
+		},
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
 }
 
 func loadEnvFile(dir string) {
