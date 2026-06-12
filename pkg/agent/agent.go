@@ -732,19 +732,33 @@ func (a *Agent) printUsage(usage llm.Usage) {
 	if usage.TotalTokens == 0 && usage.InputTokens == 0 && usage.OutputTokens == 0 {
 		return
 	}
-	fmt.Fprintf(a.cfg.Output, "usage: input=%d cached=%d output=%d reasoning=%d total=%d\n",
-		usage.InputTokens,
-		usage.CachedTokens,
-		usage.OutputTokens,
-		usage.ReasoningTokens,
-		usage.TotalTokens,
-	)
+	model := router.SelectModel(a.cfg.Model, a.cfg.ModelRoutes, a.cfg.Mode)
+	cost := llm.EstimateCost(model, usage)
+	if cost > 0 {
+		fmt.Fprintf(a.cfg.Output, "usage: input=%d cached=%d output=%d reasoning=%d total=%d cost=~$%.4f\n",
+			usage.InputTokens,
+			usage.CachedTokens,
+			usage.OutputTokens,
+			usage.ReasoningTokens,
+			usage.TotalTokens,
+			cost,
+		)
+	} else {
+		fmt.Fprintf(a.cfg.Output, "usage: input=%d cached=%d output=%d reasoning=%d total=%d\n",
+			usage.InputTokens,
+			usage.CachedTokens,
+			usage.OutputTokens,
+			usage.ReasoningTokens,
+			usage.TotalTokens,
+		)
+	}
 	a.cfg.Logger.Info("usage",
 		"input", usage.InputTokens,
 		"cached", usage.CachedTokens,
 		"output", usage.OutputTokens,
 		"reasoning", usage.ReasoningTokens,
 		"total", usage.TotalTokens,
+		"cost_usd", cost,
 	)
 }
 

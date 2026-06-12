@@ -36,6 +36,7 @@ func (ProjectMap) Run(ctx context.Context, inv Invocation) (Result, error) {
 	}
 	focus, _ := inv.Args["focus"].(string)
 
+	ignorePatterns := loadIgnorePatterns(inv.CWD)
 	var files []string
 	byExt := map[string]int{}
 	totalBytes := int64(0)
@@ -61,6 +62,9 @@ func (ProjectMap) Run(ctx context.Context, inv Invocation) (Result, error) {
 			return err
 		}
 		if shouldSkipContextPath(rel, info) {
+			return nil
+		}
+		if matchesIgnorePattern(filepath.ToSlash(rel), ignorePatterns) {
 			return nil
 		}
 		files = append(files, rel)

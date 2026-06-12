@@ -148,6 +148,8 @@ func newRootCommand() *cobra.Command {
 	root.PersistentFlags().BoolVar(&opts.noNegativeContext, "no-negative-context", false, "disable negative context deny-list cards")
 
 	var jsonOutput bool
+	var runTimeout string
+	var runParallel bool
 	runCmd := &cobra.Command{
 		Use:   "run [task]",
 		Short: "Run an agent task",
@@ -163,6 +165,15 @@ func newRootCommand() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			if runTimeout != "" {
+				dur, parseErr := time.ParseDuration(runTimeout)
+				if parseErr != nil {
+					return fmt.Errorf("--timeout: %w", parseErr)
+				}
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, dur)
+				defer cancel()
+			}
 			toolRegistry, err := buildToolRegistry(ctx, runtimeCfg)
 			if err != nil {
 				return err
@@ -170,6 +181,30 @@ func newRootCommand() *cobra.Command {
 			baseCfg := buildBaseAgentConfig(runtimeCfg, opts.cwd, model, provider, toolRegistry)
 			baseCfg.Input = os.Stdin
 			baseCfg.Output = cmd.OutOrStdout()
+
+			// --parallel: run each arg as an independent sub_agent concurrently
+			if runParallel && len(args) > 1 {
+				factory := agent.DefaultSubAgentFactory(baseCfg)
+				results := make([]string, len(args))
+				errs := make([]error, len(args))
+				var wg sync.WaitGroup
+				for i, task := range args {
+					wg.Add(1)
+					go func(idx int, t string) {
+						defer wg.Done()
+						results[idx], errs[idx] = factory(ctx, t, runtimeCfg.Mode, runtimeCfg.ContextFiles)
+					}(i, task)
+				}
+				wg.Wait()
+				for i, task := range args {
+					fmt.Fprintf(cmd.OutOrStdout(), "\n=== [%d/%d] %s ===\n%s\n", i+1, len(args), task, results[i])
+					if errs[i] != nil {
+						fmt.Fprintf(cmd.OutOrStdout(), "error: %v\n", errs[i])
+					}
+				}
+				return nil
+			}
+
 			runner, err := agent.New(baseCfg)
 			if err != nil {
 				return err
@@ -204,6 +239,8 @@ func newRootCommand() *cobra.Command {
 		},
 	}
 	runCmd.Flags().BoolVar(&jsonOutput, "json", false, "output result as JSON {result, usage}")
+	runCmd.Flags().StringVar(&runTimeout, "timeout", "", "max wall-clock time (e.g. 5m, 30s); cancels via context")
+	runCmd.Flags().BoolVar(&runParallel, "parallel", false, "run each positional arg as a parallel sub_agent")
 
 	root.AddCommand(runCmd)
 	root.AddCommand(newChatCommand(&opts))
@@ -397,7 +434,9 @@ func newTUICommand(opts *options) *cobra.Command {
 				{Name: "/doctor", Description: "Check local runtime support"},
 				{Name: "/tools", Description: "Toggle agent tools on/off"},
 				{Name: "/instructions", Description: "Show project instruction files"},
+				{Name: "/undo", Description: "Restore the most recent workspace checkpoint"},
 				{Name: "/sessions", Description: "List saved workspace sessions"},
+				{Name: "/sessions rename", Description: "Rename a session: /sessions rename <old> <new>"},
 				{Name: "/sessions delete", Description: "Delete a session by id"},
 				{Name: "/sessions prune", Description: "Delete sessions older than N days: /sessions prune --days=30"},
 				{Name: "/checkpoint", Description: "Open checkpoint actions"},
@@ -590,7 +629,38 @@ func newTUICommand(opts *options) *cobra.Command {
 							}
 						}
 						fallthrough
+					case "/undo":
+						listResult, listErr := (tools.WorkspaceCheckpointList{}).Run(context.Background(), tools.Invocation{CWD: opts.cwd, Args: map[string]any{}})
+						if listErr != nil {
+							return "", listErr
+						}
+						var checkpoints []string
+						for _, line := range strings.Split(listResult.Output, "\n") {
+							id := strings.TrimSpace(line)
+							if id != "" && id != "no checkpoints" {
+								checkpoints = append(checkpoints, id)
+							}
+						}
+						if len(checkpoints) == 0 {
+							return "Undo\n\n*No checkpoints to restore.*", nil
+						}
+						latest := checkpoints[len(checkpoints)-1]
+						restoreResult, restoreErr := (tools.WorkspaceRestore{}).Run(context.Background(), tools.Invocation{CWD: opts.cwd, Args: map[string]any{"id": latest}})
+						if restoreErr != nil {
+							return "", restoreErr
+						}
+						return fmt.Sprintf("Undo\n\nRestored checkpoint: `%s`\n\n%s", latest, restoreResult.Output), nil
 					case "/sessions":
+						if len(args) >= 4 && args[1] == "rename" {
+							sessionStore, storeErr := session.NewStore(opts.cwd)
+							if storeErr != nil {
+								return "", storeErr
+							}
+							if renameErr := sessionStore.Rename(args[2], args[3]); renameErr != nil {
+								return "", renameErr
+							}
+							return fmt.Sprintf("session renamed: `%s` → `%s`", args[2], args[3]), nil
+						}
 						if len(args) >= 3 && args[1] == "delete" {
 							sessionStore, storeErr := session.NewStore(opts.cwd)
 							if storeErr != nil {
@@ -1620,6 +1690,10 @@ func newChatCommand(opts *options) *cobra.Command {
 			baseCfg := buildBaseAgentConfig(runtimeCfg, opts.cwd, model, provider, toolRegistry)
 			baseCfg.Input = os.Stdin
 			baseCfg.Output = cmd.OutOrStdout()
+			// Enable streaming by default in interactive chat unless the user passed --no-stream
+			if !cmd.Root().PersistentFlags().Changed("no-stream") {
+				baseCfg.Stream = true
+			}
 			runner, err := agent.New(baseCfg)
 			if err != nil {
 				return err
@@ -1811,7 +1885,8 @@ func newSkillsCommand(opts *options) *cobra.Command {
 }
 
 func newDoctorCommand(opts *options) *cobra.Command {
-	return &cobra.Command{
+	var pingAPI bool
+	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check local runtime support for klyra",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -1862,9 +1937,30 @@ func newDoctorCommand(opts *options) *cobra.Command {
 				}
 				fmt.Fprintf(out, "project_skills: %s (%d bytes)\n", strings.Join(names, ", "), projectSkills.Bytes)
 			}
+			if pingAPI {
+				provider, model, buildErr := buildProviderFromConfig(runtimeCfg)
+				if buildErr != nil {
+					fmt.Fprintf(out, "ping: provider build failed: %v\n", buildErr)
+				} else {
+					start := time.Now()
+					_, pingErr := provider.Complete(context.Background(), llm.Request{
+						Model:           model,
+						Messages:        []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+						MaxOutputTokens: 1,
+					})
+					elapsed := time.Since(start)
+					if pingErr != nil {
+						fmt.Fprintf(out, "ping: FAIL (%v)\n", pingErr)
+					} else {
+						fmt.Fprintf(out, "ping: OK (%dms)\n", elapsed.Milliseconds())
+					}
+				}
+			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&pingAPI, "ping", false, "test API connectivity with a minimal request")
+	return cmd
 }
 
 func newConfigCommand(opts *options) *cobra.Command {
@@ -1949,6 +2045,22 @@ func newSessionsCommand(opts *options) *cobra.Command {
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "compacted %s: messages %d -> %d, estimated tokens %d -> %d\n",
 				saved.ID, stats.OriginalMessages, stats.PackedMessages, stats.OriginalTokens, stats.PackedTokens)
+			return nil
+		},
+	})
+	sessionsCmd.AddCommand(&cobra.Command{
+		Use:   "rename [old-id] [new-id]",
+		Short: "Rename a saved session",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := session.NewStore(opts.cwd)
+			if err != nil {
+				return err
+			}
+			if err := store.Rename(args[0], args[1]); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "renamed session: %s -> %s\n", args[0], args[1])
 			return nil
 		},
 	})

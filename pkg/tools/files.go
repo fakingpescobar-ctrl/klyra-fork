@@ -31,6 +31,7 @@ func (ListFiles) Run(_ context.Context, inv Invocation) (Result, error) {
 	}
 
 	notes := loadFileNotes(inv.CWD)
+	ignorePatterns := loadIgnorePatterns(inv.CWD)
 	var files []string
 	err = filepath.WalkDir(inv.CWD, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -50,6 +51,9 @@ func (ListFiles) Run(_ context.Context, inv Invocation) (Result, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if matchesIgnorePattern(rel, ignorePatterns) {
+			return nil
+		}
 		if note := notes[rel]; note != "" {
 			rel += "\t# " + note
 		}

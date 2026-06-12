@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"klyra/pkg/llm"
 )
@@ -37,7 +38,8 @@ func (Search) Run(ctx context.Context, inv Invocation) (Result, error) {
 		return Result{}, err
 	}
 
-	args := defaultSearchArgs(pattern, glob)
+	ignorePatterns := loadIgnorePatterns(inv.CWD)
+	args := defaultSearchArgs(pattern, glob, ignorePatterns)
 	cmd := exec.CommandContext(ctx, "rg", args...)
 	cmd.Dir = inv.CWD
 	var stdout bytes.Buffer
@@ -58,7 +60,7 @@ func (Search) Run(ctx context.Context, inv Invocation) (Result, error) {
 	return Result{Output: CompressOutput(output, maxLines)}, nil
 }
 
-func defaultSearchArgs(pattern, userGlob string) []string {
+func defaultSearchArgs(pattern, userGlob string, ignorePatterns []string) []string {
 	args := []string{"--line-number", "--hidden"}
 	for _, glob := range []string{
 		"!.git",
@@ -77,6 +79,12 @@ func defaultSearchArgs(pattern, userGlob string) []string {
 		"!*.pfx",
 	} {
 		args = append(args, "--glob", glob)
+	}
+	for _, pat := range ignorePatterns {
+		if !strings.HasPrefix(pat, "!") {
+			pat = "!" + pat
+		}
+		args = append(args, "--glob", pat)
 	}
 	if userGlob != "" {
 		args = append(args, "--glob", userGlob)

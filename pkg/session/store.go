@@ -104,6 +104,30 @@ func (s *Store) List() ([]Session, error) {
 	return sessions, nil
 }
 
+// Rename changes a session's ID by rewriting the file under the new name and deleting the old one.
+func (s *Store) Rename(oldID, newID string) error {
+	oldID = cleanID(oldID)
+	newID = cleanID(newID)
+	if oldID == "" || newID == "" {
+		return fmt.Errorf("session ids cannot be empty")
+	}
+	if oldID == newID {
+		return nil
+	}
+	if _, err := s.Load(newID); err == nil {
+		return fmt.Errorf("session %q already exists", newID)
+	}
+	sess, err := s.Load(oldID)
+	if err != nil {
+		return err
+	}
+	sess.ID = newID
+	if err := s.Save(sess); err != nil {
+		return err
+	}
+	return s.Delete(oldID)
+}
+
 // Delete removes a session by ID.
 func (s *Store) Delete(id string) error {
 	id = cleanID(id)
