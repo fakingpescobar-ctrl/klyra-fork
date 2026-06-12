@@ -522,3 +522,91 @@ ping: FAIL (connection refused)
 | `pkg/tools/project.go` | Применяет паттерны ignore в `project_map` |
 | `pkg/session/store.go` | Новый метод `Rename()` |
 | `cmd/klyra/root.go` | `--timeout`, `--parallel`, стриминг, `/undo`, `sessions rename`, `doctor --ping` |
+
+---
+
+## Улучшения итерации 4
+
+Четвёртая волна: просмотр профилей, безопасный запуск, перенос сессий, init-команда, retry, стоимость в TUI, watch-режим.
+
+### 25. `klyra config profiles` — список профилей
+
+```sh
+klyra config profiles
+```
+
+Выводит все именованные профили из конфига с ключевыми настройками:
+
+```
+anthropic         provider=anthropic approval=ask max_steps=20
+coding            provider=openai reasoning=low approval=ask max_steps=20
+deep              provider=openai reasoning=medium approval=ask max_steps=30
+gemini            provider=gemini approval=ask max_steps=20
+```
+
+Профиль применяется флагом `--profile`: `klyra --profile deep run "..."`.
+
+### 26. `run --dry-run` — предпросмотр без выполнения
+
+```sh
+klyra run --dry-run "добавь тесты к pkg/auth"
+```
+
+Агент планирует задачу, но все вызовы инструментов перехватываются и блокируются. Выводится список инструментов, которые агент собирается вызвать:
+
+```
+[dry-run] agent would execute the following tools:
+  1. read_file {"path":"pkg/auth/auth.go"}
+  2. create_file {"path":"pkg/auth/auth_test.go"}
+```
+
+### 27. `sessions export` / `sessions import`
+
+```sh
+klyra sessions export my-session backup.json
+klyra sessions import backup.json
+klyra sessions import backup.json --overwrite
+```
+
+Экспорт сохраняет сессию в JSON-файл, импорт загружает её обратно. Полезно для передачи контекста между машинами или бэкапа.
+
+### 28. `klyra init` — инициализация проекта
+
+```sh
+klyra init
+```
+
+Создаёт стартовые файлы если они не существуют:
+- `.klyra/instructions.md` — место для описания проекта и конвенций
+- `.klyra/ignore.md` — паттерны исключений файлов
+- `.agentcli/config.json` — конфигурация по умолчанию
+
+### 29. `run --retry N` — повтор при ошибках провайдера
+
+```sh
+klyra run --retry 3 "задача"
+```
+
+При ошибке API (rate limit, 503) агент повторяет запуск с экспоненциальной задержкой: 1с, 2с, 4с, ... Прерывается по Ctrl+C.
+
+### 30. Накопленная стоимость в TUI
+
+В строке статуса TUI появляется сумма `~$X.XXXX` — накопленная стоимость всех запросов текущей сессии. Обновляется после каждого ответа агента. Отображается зелёным цветом.
+
+### 31. `run --watch` — автоперезапуск при изменении файлов
+
+```sh
+klyra run --watch "исправь ошибки линтера"
+klyra run --watch --watch-glob "**/*.go" "проверь код"
+klyra run --watch --watch-interval 2s "задача"
+```
+
+Агент запускается немедленно, затем следит за изменениями файлов через polling. При обнаружении изменений — автоматический повторный запуск. Выход: Ctrl+C.
+
+### Изменённые файлы (итерация 4)
+
+| Файл | Что изменилось |
+|------|----------------|
+| `cmd/klyra/root.go` | `config profiles`, `--dry-run`, `sessions export/import`, `klyra init`, `--retry`, `--watch` |
+| `pkg/session/store.go` | Новые методы `Export()` и `Import()` |
+| `pkg/tui/model.go` | Поле `sessionCostUSD`, накопление стоимости, отображение в footer |
