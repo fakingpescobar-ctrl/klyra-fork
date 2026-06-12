@@ -17,6 +17,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+
+	"klyra/pkg/llm"
 )
 
 // ---------------------------------------------------------------------------
@@ -253,6 +255,7 @@ type Model struct {
 	sidebarScroll          int // scroll offset for sidebar content
 	sidebarCursor          int // selected item in sidebar (-1 = none)
 	requestStartTime       time.Time
+	sessionCostUSD         float64
 
 	// Modal state
 	activeModal    modalKind
@@ -802,6 +805,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_, sscanfErr := fmt.Sscanf(usageLine, "[TokenUsage] input=%d cached=%d output=%d reasoning=%d total=%d", &inputT, &cachedT, &outputT, &reasoningT, &totalT)
 				if sscanfErr == nil {
 					hasUsage = true
+					stepCost := llm.EstimateCost(m.model, llm.Usage{
+						InputTokens:     inputT,
+						CachedTokens:    cachedT,
+						OutputTokens:    outputT,
+						ReasoningTokens: reasoningT,
+						TotalTokens:     totalT,
+					})
+					m.sessionCostUSD += stepCost
 				}
 			}
 			statsLine := fmt.Sprintf("stats: duration=%s", durationStr)
@@ -2433,7 +2444,11 @@ func (m Model) renderFooter() string {
 		}
 	}
 	settingsHint := lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Join(hints, "  "))
-	rightFooter := modelStyle.Render(valueOr(m.model, "routed")) + "  " + settingsHint + " "
+	costStr := ""
+	if m.sessionCostUSD > 0 {
+		costStr = lipgloss.NewStyle().Foreground(colorEmerald).Render(fmt.Sprintf("~$%.4f", m.sessionCostUSD)) + "  "
+	}
+	rightFooter := costStr + modelStyle.Render(valueOr(m.model, "routed")) + "  " + settingsHint + " "
 
 	// Gradient separator
 	sepWidth := max(10, m.width)

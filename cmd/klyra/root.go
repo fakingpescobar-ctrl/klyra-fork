@@ -150,6 +150,11 @@ func newRootCommand() *cobra.Command {
 	var jsonOutput bool
 	var runTimeout string
 	var runParallel bool
+	var runDryRun bool
+	var runRetry int
+	var runWatch bool
+	var runWatchGlob string
+	var runWatchInterval string
 	runCmd := &cobra.Command{
 		Use:   "run [task]",
 		Short: "Run an agent task",
@@ -182,6 +187,36 @@ func newRootCommand() *cobra.Command {
 			baseCfg.Input = os.Stdin
 			baseCfg.Output = cmd.OutOrStdout()
 
+			// --dry-run: intercept all tool calls, print what would run, don't execute
+			if runDryRun {
+				var dryRunTools []string
+				baseCfg.Approver = func(req agent.ApprovalRequest) (bool, error) {
+					entry := req.Tool
+					if len(req.Args) > 0 {
+						if data, merr := json.Marshal(req.Args); merr == nil {
+							entry += " " + string(data)
+						}
+					}
+					dryRunTools = append(dryRunTools, entry)
+					return false, fmt.Errorf("dry-run: tool call blocked")
+				}
+				out := cmd.OutOrStdout()
+				fmt.Fprintln(out, "[dry-run] agent would execute the following tools:")
+				runner, err := agent.New(baseCfg)
+				if err != nil {
+					return err
+				}
+				task := strings.Join(args, " ")
+				runner.RunConversation(ctx, nil, task) //nolint:errcheck
+				if len(dryRunTools) == 0 {
+					fmt.Fprintln(out, "  (no tool calls planned)")
+				}
+				for i, t := range dryRunTools {
+					fmt.Fprintf(out, "  %d. %s\n", i+1, t)
+				}
+				return nil
+			}
+
 			// --parallel: run each arg as an independent sub_agent concurrently
 			if runParallel && len(args) > 1 {
 				factory := agent.DefaultSubAgentFactory(baseCfg)
@@ -210,37 +245,139 @@ func newRootCommand() *cobra.Command {
 				return err
 			}
 			task := strings.Join(args, " ")
-			if strings.TrimSpace(opts.sessionID) == "" {
-				result, runErr := runner.RunConversation(ctx, nil, task)
+
+			runWithRetry := func(msgs []llm.Message) (agent.RunResult, error) {
+				maxAttempts := 1
+				if runRetry > 0 {
+					maxAttempts = runRetry + 1
+				}
+				var lastErr error
+				var lastResult agent.RunResult
+				for attempt := 0; attempt < maxAttempts; attempt++ {
+					if attempt > 0 {
+						backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+						fmt.Fprintf(cmd.OutOrStdout(), "retry %d/%d after %s: %v\n", attempt, runRetry, backoff, lastErr)
+						select {
+						case <-ctx.Done():
+							return lastResult, ctx.Err()
+						case <-time.After(backoff):
+						}
+					}
+					lastResult, lastErr = runner.RunConversation(ctx, msgs, task)
+					if lastErr == nil {
+						return lastResult, nil
+					}
+				}
+				return lastResult, lastErr
+			}
+
+			runOnce := func() error {
+				if strings.TrimSpace(opts.sessionID) == "" {
+					result, runErr := runWithRetry(nil)
+					if jsonOutput {
+						return printJSONResult(cmd.OutOrStdout(), result)
+					}
+					return runErr
+				}
+				store, err := session.NewStore(opts.cwd)
+				if err != nil {
+					return err
+				}
+				saved, err := store.LoadOrCreate(opts.sessionID, opts.cwd)
+				if err != nil {
+					return err
+				}
+				result, err := runWithRetry(saved.Messages)
+				saved.Messages = result.Messages
+				if saveErr := store.Save(saved); saveErr != nil {
+					return saveErr
+				}
+				printContextDebug(cmd.OutOrStdout(), result.ContextDebug)
+				fmt.Fprintf(cmd.OutOrStdout(), "session: %s\n", saved.ID)
 				if jsonOutput {
 					return printJSONResult(cmd.OutOrStdout(), result)
 				}
-				return runErr
-			}
-			store, err := session.NewStore(opts.cwd)
-			if err != nil {
 				return err
 			}
-			saved, err := store.LoadOrCreate(opts.sessionID, opts.cwd)
-			if err != nil {
-				return err
+
+			if !runWatch {
+				return runOnce()
 			}
-			result, err := runner.RunConversation(ctx, saved.Messages, task)
-			saved.Messages = result.Messages
-			if saveErr := store.Save(saved); saveErr != nil {
-				return saveErr
+
+			// --watch mode: run once, then re-run on file changes
+			interval := 500 * time.Millisecond
+			if runWatchInterval != "" {
+				if d, parseErr := time.ParseDuration(runWatchInterval); parseErr == nil {
+					interval = d
+				}
 			}
-			printContextDebug(cmd.OutOrStdout(), result.ContextDebug)
-			fmt.Fprintf(cmd.OutOrStdout(), "session: %s\n", saved.ID)
-			if jsonOutput {
-				return printJSONResult(cmd.OutOrStdout(), result)
+			collectMTimes := func() map[string]time.Time {
+				mtimes := map[string]time.Time{}
+				filepath.WalkDir(opts.cwd, func(path string, d os.DirEntry, walkErr error) error { //nolint:errcheck
+					if walkErr != nil || d.IsDir() {
+						return nil
+					}
+					rel, _ := filepath.Rel(opts.cwd, path)
+					rel = filepath.ToSlash(rel)
+					if matched, _ := filepath.Match(runWatchGlob, filepath.Base(rel)); !matched {
+						if runWatchGlob != "**/*" {
+							return nil
+						}
+					}
+					if info, err := d.Info(); err == nil {
+						mtimes[rel] = info.ModTime()
+					}
+					return nil
+				})
+				return mtimes
 			}
-			return err
+			fmt.Fprintf(cmd.OutOrStdout(), "[watch] watching %s every %s\n", runWatchGlob, interval)
+			if err := runOnce(); err != nil {
+				fmt.Fprintf(cmd.OutOrStdout(), "[watch] error: %v\n", err)
+			}
+			prev := collectMTimes()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-time.After(interval):
+				}
+				curr := collectMTimes()
+				changed := false
+				for p, mt := range curr {
+					if prev[p] != mt {
+						changed = true
+						fmt.Fprintf(cmd.OutOrStdout(), "[watch] changed: %s\n", p)
+						break
+					}
+				}
+				if !changed {
+					for p := range prev {
+						if _, ok := curr[p]; !ok {
+							changed = true
+							fmt.Fprintf(cmd.OutOrStdout(), "[watch] deleted: %s\n", p)
+							break
+						}
+					}
+				}
+				if changed {
+					prev = curr
+					fmt.Fprintf(cmd.OutOrStdout(), "[watch] re-running...\n")
+					if err := runOnce(); err != nil {
+						fmt.Fprintf(cmd.OutOrStdout(), "[watch] error: %v\n", err)
+					}
+				}
+			}
 		},
 	}
 	runCmd.Flags().BoolVar(&jsonOutput, "json", false, "output result as JSON {result, usage}")
 	runCmd.Flags().StringVar(&runTimeout, "timeout", "", "max wall-clock time (e.g. 5m, 30s); cancels via context")
 	runCmd.Flags().BoolVar(&runParallel, "parallel", false, "run each positional arg as a parallel sub_agent")
+	runCmd.Flags().BoolVar(&runDryRun, "dry-run", false, "show what tool calls the agent would make without executing them")
+	runCmd.Flags().IntVar(&runRetry, "retry", 0, "number of retries on provider error (exponential backoff: 1s, 2s, 4s, …)")
+	runCmd.Flags().BoolVar(&runWatch, "watch", false, "re-run agent when files matching --watch-glob change")
+	runCmd.Flags().StringVar(&runWatchGlob, "watch-glob", "**/*", "glob pattern of files to watch (default: all files)")
+	runCmd.Flags().StringVar(&runWatchInterval, "watch-interval", "500ms", "polling interval for file change detection")
 
 	root.AddCommand(runCmd)
 	root.AddCommand(newChatCommand(&opts))
@@ -255,6 +392,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newDoctorCommand(&opts))
 	root.AddCommand(newConfigCommand(&opts))
 	root.AddCommand(newSessionsCommand(&opts))
+	root.AddCommand(newInitCommand(&opts))
 	return root
 }
 
@@ -1996,6 +2134,51 @@ func newConfigCommand(opts *options) *cobra.Command {
 			return nil
 		},
 	})
+	configCmd.AddCommand(&cobra.Command{
+		Use:   "profiles",
+		Short: "List available config profiles",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := appconfig.Load(opts.configPath)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if len(cfg.Profiles) == 0 {
+				fmt.Fprintln(out, "no profiles defined")
+				return nil
+			}
+			names := make([]string, 0, len(cfg.Profiles))
+			for name := range cfg.Profiles {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				p := cfg.Profiles[name]
+				var parts []string
+				if p.Provider != "" {
+					parts = append(parts, "provider="+p.Provider)
+				}
+				if p.Model != "" {
+					parts = append(parts, "model="+p.Model)
+				}
+				if p.Reasoning != "" {
+					parts = append(parts, "reasoning="+p.Reasoning)
+				}
+				if p.MaxSteps > 0 {
+					parts = append(parts, fmt.Sprintf("max_steps=%d", p.MaxSteps))
+				}
+				if p.ApprovalMode != "" {
+					parts = append(parts, "approval="+p.ApprovalMode)
+				}
+				if len(parts) > 0 {
+					fmt.Fprintf(out, "%-16s  %s\n", name, strings.Join(parts, " "))
+				} else {
+					fmt.Fprintln(out, name)
+				}
+			}
+			return nil
+		},
+	})
 	return configCmd
 }
 
@@ -2099,7 +2282,115 @@ func newSessionsCommand(opts *options) *cobra.Command {
 	}
 	pruneCmd.Flags().IntVar(&pruneDays, "days", 30, "delete sessions not updated within this many days")
 	sessionsCmd.AddCommand(pruneCmd)
+
+	exportCmd := &cobra.Command{
+		Use:   "export [id] [file]",
+		Short: "Export a session to a JSON file (defaults to <id>.json)",
+		Args:  cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := session.NewStore(opts.cwd)
+			if err != nil {
+				return err
+			}
+			id := args[0]
+			dest := id + ".json"
+			if len(args) == 2 {
+				dest = args[1]
+			}
+			if _, err := store.Export(id, dest); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "exported session %s -> %s\n", id, dest)
+			return nil
+		},
+	}
+	sessionsCmd.AddCommand(exportCmd)
+
+	var importOverwrite bool
+	importCmd := &cobra.Command{
+		Use:   "import [file]",
+		Short: "Import a session from a JSON file",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := session.NewStore(opts.cwd)
+			if err != nil {
+				return err
+			}
+			sess, err := store.Import(args[0], importOverwrite)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "imported session: %s (%d messages)\n", sess.ID, len(sess.Messages))
+			return nil
+		},
+	}
+	importCmd.Flags().BoolVar(&importOverwrite, "overwrite", false, "overwrite existing session with same id")
+	sessionsCmd.AddCommand(importCmd)
+
 	return sessionsCmd
+}
+
+func newInitCommand(opts *options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "init",
+		Short: "Initialize a klyra project in the current directory",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			out := cmd.OutOrStdout()
+			cwd := opts.cwd
+			klyraDir := filepath.Join(cwd, ".klyra")
+			if err := os.MkdirAll(klyraDir, 0o755); err != nil {
+				return err
+			}
+			created := 0
+
+			instrPath := filepath.Join(klyraDir, "instructions.md")
+			if _, err := os.Stat(instrPath); os.IsNotExist(err) {
+				instrContent := "# Project Instructions\n\nDescribe your project and coding conventions here.\nklyra will include this in every agent run.\n\n## Guidelines\n\n- Prefer small, focused changes\n- Write tests for new functionality\n- Document public APIs\n"
+				if err := os.WriteFile(instrPath, []byte(instrContent), 0o644); err != nil {
+					return err
+				}
+				fmt.Fprintf(out, "created .klyra/instructions.md\n")
+				created++
+			} else {
+				fmt.Fprintf(out, "skipped .klyra/instructions.md (already exists)\n")
+			}
+
+			ignorePath := filepath.Join(klyraDir, "ignore.md")
+			if _, err := os.Stat(ignorePath); os.IsNotExist(err) {
+				ignoreContent := "# klyra ignore patterns\n# Files and directories listed here are excluded from list_files, search, and project_map.\n# Syntax: one glob pattern per line. Lines starting with # are comments.\n\ndist/\nbuild/\nout/\n*.min.js\n*.min.css\n*.generated.go\n*.pb.go\n"
+				if err := os.WriteFile(ignorePath, []byte(ignoreContent), 0o644); err != nil {
+					return err
+				}
+				fmt.Fprintf(out, "created .klyra/ignore.md\n")
+				created++
+			} else {
+				fmt.Fprintf(out, "skipped .klyra/ignore.md (already exists)\n")
+			}
+
+			agentDir := filepath.Join(cwd, ".agentcli")
+			if err := os.MkdirAll(agentDir, 0o755); err != nil {
+				return err
+			}
+
+			cfgPath := filepath.Join(agentDir, "config.json")
+			if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+				if _, err := appconfig.WriteDefault(cfgPath); err != nil {
+					return err
+				}
+				fmt.Fprintf(out, "created .agentcli/config.json\n")
+				created++
+			} else {
+				fmt.Fprintf(out, "skipped .agentcli/config.json (already exists)\n")
+			}
+
+			if created > 0 {
+				fmt.Fprintf(out, "\nProject initialized. Edit .klyra/instructions.md to describe your project.\nSet OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY and run: klyra run \"hello\"\n")
+			} else {
+				fmt.Fprintf(out, "\nAlready initialized.\n")
+			}
+			return nil
+		},
+	}
 }
 
 func effectiveConfig(cmd *cobra.Command, opts options) (appconfig.Config, error) {

@@ -162,6 +162,48 @@ func (s *Store) Prune(olderThan time.Duration) (int, error) {
 	return count, nil
 }
 
+// Export writes a session to a JSON file at destPath. If destPath is empty, returns the JSON bytes.
+func (s *Store) Export(id, destPath string) ([]byte, error) {
+	sess, err := s.Load(id)
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.MarshalIndent(sess, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	data = append(data, '\n')
+	if destPath == "" {
+		return data, nil
+	}
+	return nil, os.WriteFile(destPath, data, 0o644)
+}
+
+// Import loads a session from a JSON file and saves it into the store.
+// Returns an error if a session with the same ID already exists unless overwrite is true.
+func (s *Store) Import(srcPath string, overwrite bool) (Session, error) {
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		return Session{}, err
+	}
+	var sess Session
+	if err := json.Unmarshal(data, &sess); err != nil {
+		return Session{}, fmt.Errorf("invalid session file: %w", err)
+	}
+	if sess.ID == "" {
+		return Session{}, fmt.Errorf("session file has no id")
+	}
+	if !overwrite {
+		if _, err := s.Load(sess.ID); err == nil {
+			return Session{}, fmt.Errorf("session %q already exists; use --overwrite to replace", sess.ID)
+		}
+	}
+	if err := s.Save(sess); err != nil {
+		return Session{}, err
+	}
+	return sess, nil
+}
+
 var unsafeID = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 
 func cleanID(id string) string {
