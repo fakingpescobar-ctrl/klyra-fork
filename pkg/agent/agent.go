@@ -70,6 +70,11 @@ type Config struct {
 	Logger *slog.Logger
 	// SubAgentFactory enables the sub_agent tool. Nil disables it. (#5)
 	SubAgentFactory SubAgentFactory
+	// DryRun, when true, intercepts every tool call before execution: the call
+	// is recorded via DryRunRecord (if set) and skipped, so no tool ever runs.
+	// This applies regardless of approval mode or whether the tool is read-only.
+	DryRun       bool
+	DryRunRecord func(llm.ToolCall)
 }
 
 type ApprovalFunc func(ApprovalRequest) (bool, error)
@@ -399,6 +404,19 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 				continue
 			}
 
+			// Dry-run: record every tool call and skip it before any approval or
+			// execution, so read-only and auto-approved tools never actually run.
+			if a.cfg.DryRun {
+				if a.cfg.DryRunRecord != nil {
+					a.cfg.DryRunRecord(call)
+				}
+				p.skip = true
+				p.obs = toolObservation(call, tools.Result{Output: "[dry-run] tool call skipped"}, nil)
+				p.phase = "dry-run"
+				pending = append(pending, p)
+				continue
+			}
+
 			// Approval check (interactive — must remain sequential)
 			if approveErr := a.approveToolCall(call); approveErr != nil {
 				p.skip = true
@@ -451,7 +469,12 @@ func (a *Agent) RunConversationWithAttachments(ctx context.Context, history []ll
 				window.Add(llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: p.obs})
 				fmt.Fprintf(a.cfg.Output, "tool %s: %v\n", p.phase, p.err)
 				a.cfg.Logger.Warn("tool "+p.phase, "tool", call.Name, "error", p.err)
-				if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: p.phase, Tool: call.Name, ID: call.ID, Args: call.Arguments, Error: p.err.Error()}); progressErr != nil {
+				// A skipped call may carry no error (e.g. dry-run), so guard the deref.
+				skipErrStr := ""
+				if p.err != nil {
+					skipErrStr = p.err.Error()
+				}
+				if progressErr := a.emitToolProgress(ToolProgressEvent{Phase: p.phase, Tool: call.Name, ID: call.ID, Args: call.Arguments, Error: skipErrStr}); progressErr != nil {
 					return RunResult{Final: final, Messages: sanitizeMessagesForStorage(window.Messages()), Usage: lastUsage, ContextDebug: lastDebug}, progressErr
 				}
 				if p.abort != nil {

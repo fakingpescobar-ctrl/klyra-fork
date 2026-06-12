@@ -187,27 +187,37 @@ func newRootCommand() *cobra.Command {
 			baseCfg.Input = os.Stdin
 			baseCfg.Output = cmd.OutOrStdout()
 
-			// --dry-run: intercept all tool calls, print what would run, don't execute
+			// --dry-run: record every tool call the agent makes and skip execution.
+			// Uses the agent's DryRun hook so read-only and auto-approved tools are
+			// intercepted too (an Approver hook would miss both). The agent's own
+			// chatter is muted so the report contains only the planned tool calls.
 			if runDryRun {
 				var dryRunTools []string
-				baseCfg.Approver = func(req agent.ApprovalRequest) (bool, error) {
-					entry := req.Tool
-					if len(req.Args) > 0 {
-						if data, merr := json.Marshal(req.Args); merr == nil {
+				baseCfg.DryRun = true
+				baseCfg.DryRunRecord = func(call llm.ToolCall) {
+					entry := call.Name
+					if len(call.Arguments) > 0 {
+						if data, merr := json.Marshal(call.Arguments); merr == nil {
 							entry += " " + string(data)
 						}
 					}
 					dryRunTools = append(dryRunTools, entry)
-					return false, fmt.Errorf("dry-run: tool call blocked")
 				}
-				out := cmd.OutOrStdout()
-				fmt.Fprintln(out, "[dry-run] agent would execute the following tools:")
+				baseCfg.Output = io.Discard
+				baseCfg.Stream = false
+				baseCfg.StreamHandler = nil
+				baseCfg.ReasoningHandler = nil
+				baseCfg.ToolProgress = nil
 				runner, err := agent.New(baseCfg)
 				if err != nil {
 					return err
 				}
 				task := strings.Join(args, " ")
-				runner.RunConversation(ctx, nil, task) //nolint:errcheck
+				if _, runErr := runner.RunConversation(ctx, nil, task); runErr != nil {
+					return runErr
+				}
+				out := cmd.OutOrStdout()
+				fmt.Fprintln(out, "[dry-run] agent would execute the following tools:")
 				if len(dryRunTools) == 0 {
 					fmt.Fprintln(out, "  (no tool calls planned)")
 				}

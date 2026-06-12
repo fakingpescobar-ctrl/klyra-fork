@@ -1068,6 +1068,61 @@ func TestAgentFallsBackToNonStreamWhenStreamFailsBeforeOutput(t *testing.T) {
 	}
 }
 
+func TestAgentDryRunRecordsToolCallsWithoutExecuting(t *testing.T) {
+	provider := &scriptedProvider{
+		responses: []llm.Response{
+			{Content: "planning", ToolCalls: []llm.ToolCall{{
+				ID:        "call-1",
+				Name:      "create_file",
+				Arguments: map[string]any{"path": "x.txt", "content": "data"},
+			}}},
+			{Content: "done"},
+		},
+	}
+	// create_file is auto-approved under ApprovalMode "auto"; dry-run must still
+	// block it. This also exercises the nil-error skip path (regression: that
+	// path used to panic on p.err.Error()).
+	tool := &countingTool{name: "create_file", output: "created"}
+	var recorded []llm.ToolCall
+	agent, err := New(Config{
+		CWD:          t.TempDir(),
+		Provider:     provider,
+		Tools:        tools.NewRegistry(tool),
+		Output:       io.Discard,
+		ApprovalMode: "auto",
+		Sandbox:      "workspace-write",
+		DryRun:       true,
+		DryRunRecord: func(call llm.ToolCall) {
+			recorded = append(recorded, call)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.RunConversation(context.Background(), nil, "create a file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Final != "done" {
+		t.Fatalf("unexpected final: %q", result.Final)
+	}
+	if tool.calls != 0 {
+		t.Fatalf("dry-run must not execute tools, ran %d times", tool.calls)
+	}
+	if len(recorded) != 1 || recorded[0].Name != "create_file" {
+		t.Fatalf("expected one recorded create_file call, got %+v", recorded)
+	}
+	var sawDryRunObs bool
+	for _, msg := range result.Messages {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "[dry-run] tool call skipped") {
+			sawDryRunObs = true
+		}
+	}
+	if !sawDryRunObs {
+		t.Fatalf("expected dry-run skip observation in messages: %+v", result.Messages)
+	}
+}
+
 func hasToolSpecName(specs []llm.ToolSpec, name string) bool {
 	for _, spec := range specs {
 		if spec.Name == name {
